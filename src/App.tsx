@@ -360,7 +360,7 @@ function seedSoiree1(): Soiree {
     B: ["JOAO", "SAMUEL", "MARVIN", "ACHIL"],
   };
 
-  const base: Array<{ phase: Phase; pool: "A" | "B" | null; a: string; b: string; winner: string }> = [
+  const base: Array<{ order: number; phase: Phase; pool: "A" | "B" | null; a: string; b: string; winner: string }> = [
     { order: 1, phase: "POULE", pool: "A", a: "CLÉMENT", b: "ANGEL", winner: "ANGEL" },
     { order: 2, phase: "POULE", pool: "B", a: "JOAO", b: "SAMUEL", winner: "SAMUEL" },
     { order: 3, phase: "POULE", pool: "A", a: "EMERIC", b: "BAPTISTE", winner: "BAPTISTE" },
