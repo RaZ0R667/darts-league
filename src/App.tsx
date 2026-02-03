@@ -97,6 +97,10 @@ function uniq<T>(arr: T[]) {
   return Array.from(new Set(arr));
 }
 
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === "string" && v.trim().length > 0;
+}
+
 function shuffle<T>(arr: T[]) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -356,7 +360,7 @@ function seedSoiree1(): Soiree {
     B: ["JOAO", "SAMUEL", "MARVIN", "ACHIL"],
   };
 
-  const matches: CoreMatch[] = [
+  const base: Array<{ phase: Phase; pool: "A" | "B" | null; a: string; b: string; winner: string }> = [
     { order: 1, phase: "POULE", pool: "A", a: "CLÉMENT", b: "ANGEL", winner: "ANGEL" },
     { order: 2, phase: "POULE", pool: "B", a: "JOAO", b: "SAMUEL", winner: "SAMUEL" },
     { order: 3, phase: "POULE", pool: "A", a: "EMERIC", b: "BAPTISTE", winner: "BAPTISTE" },
@@ -373,7 +377,9 @@ function seedSoiree1(): Soiree {
     { order: 14, phase: "DEMI", pool: null, a: "CLÉMENT", b: "MARVIN", winner: "MARVIN" },
     { order: 15, phase: "PFINAL", pool: null, a: "CLÉMENT", b: "SAMUEL", winner: "SAMUEL" },
     { order: 16, phase: "FINAL", pool: null, a: "ANGEL", b: "MARVIN", winner: "ANGEL" },
-  ].map((m, idx) => ({
+  ];
+
+  const matches: CoreMatch[] = base.map((m, idx) => ({
     id: uid("m"),
     order: idx + 1,
     phase: m.phase,
@@ -480,7 +486,7 @@ function sanitizeState(raw: any): AppState {
     const season = raw.season;
     if (!season || typeof season !== "object") return fallback;
 
-    const players = uniq((season.players ?? []).map(normName)).filter(Boolean);
+    const players = uniq((season.players ?? []).map(normName)).filter(isNonEmptyString);
     const soirees: Soiree[] = (season.soirees ?? []).map((s: any, i: number) => {
       const poolsA = (s?.pools?.A ?? []).map(normName).filter(Boolean);
       const poolsB = (s?.pools?.B ?? []).map(normName).filter(Boolean);
@@ -537,7 +543,7 @@ function sanitizeState(raw: any): AppState {
             ...s.matches.flatMap((m) => [m.a, m.b, m.winner]),
             ...s.rebuys.flatMap((r) => [r.buyer, r.a, r.b, r.winner]),
           ])
-        ).filter(Boolean);
+        ).filter(isNonEmptyString);
 
     const seasonSan: Season = {
       id: normName(season.id) || uid("season"),
@@ -751,9 +757,6 @@ export default function App() {
     return state.season.soirees.find((s) => s.number === selectedSoireeNumber) ?? state.season.soirees[0];
   }, [state.season.soirees, selectedSoireeNumber]);
 
-  const currentSoireeStats = useMemo(() => {
-    return computePointsFromMatches(currentSoiree.matches, currentSoiree.rebuys, currentSoiree.number, state.season);
-  }, [currentSoiree.matches, currentSoiree.rebuys, currentSoiree.number, state.season]);
 
   const currentPoolStandings = useMemo(() => {
     const poolMatches = currentSoiree.matches.filter((m) => m.phase === "POULE");
@@ -1146,13 +1149,6 @@ export default function App() {
     };
   }, [currentSoiree.matches, currentSoiree.number, state.season]);
 
-  const gainsThisSoireeEUR = useMemo(() => {
-    const g = new Map<string, number>();
-    if (currentPodium.first) g.set(currentPodium.first, (g.get(currentPodium.first) ?? 0) + MONEY.podiumEUR.first);
-    if (currentPodium.second) g.set(currentPodium.second, (g.get(currentPodium.second) ?? 0) + MONEY.podiumEUR.second);
-    if (currentPodium.third) g.set(currentPodium.third, (g.get(currentPodium.third) ?? 0) + MONEY.podiumEUR.third);
-    return g;
-  }, [currentPodium]);
 
   const totalGainsEUR = useMemo(() => {
     const totals = new Map<string, number>();
