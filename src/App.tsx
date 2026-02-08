@@ -1187,6 +1187,41 @@ export default function App() {
     return out;
   }, [state.season.players, state.season.soirees]);
 
+  const rankingTimeline = useMemo(() => {
+    const players = state.season.players;
+    const soirees = [...state.season.soirees].sort((a, b) => a.number - b.number);
+    const totals = new Map<string, { pts: number; wins: number; bonus: number }>();
+    players.forEach((p) => totals.set(p, { pts: 0, wins: 0, bonus: 0 }));
+
+    const series = new Map<string, number[]>();
+    players.forEach((p) => series.set(p, []));
+
+    for (const s of soirees) {
+      const { pts, wins, bonus } = computePointsFromMatches(s.matches, s.rebuys, s.number, state.season);
+      for (const p of players) {
+        const t = totals.get(p)!;
+        totals.set(p, {
+          pts: t.pts + (pts.get(p) ?? 0),
+          wins: t.wins + (wins.get(p) ?? 0),
+          bonus: t.bonus + (bonus.get(p) ?? 0),
+        });
+      }
+
+      const table = players
+        .map((p) => ({ name: p, ...(totals.get(p) ?? { pts: 0, wins: 0, bonus: 0 }) }))
+        .sort((a, b) => b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name));
+
+      table.forEach((row, idx) => {
+        series.get(row.name)!.push(idx + 1);
+      });
+    }
+
+    return {
+      labels: soirees.map((s) => s.number),
+      series: players.map((p) => ({ player: p, ranks: series.get(p) ?? [] })),
+    };
+  }, [state.season.players, state.season.soirees]);
+
   return (
     <div className="min-h-screen bg-[#0b0f17] text-white">
       <div className="mx-auto max-w-6xl px-4 pt-6 pb-24 md:pb-6">
@@ -1738,31 +1773,88 @@ export default function App() {
               </div>
             </Section>
 
-            <Section title="Graph (simple) — Points par soirée">
-              <div className="text-xs text-white/60 mb-2">Mini-graph: barres ASCII (lisible sans librairie)</div>
-              <div className="space-y-2">
-                {allSoireeNumbers.map((n) => {
-                  const so = state.season.soirees.find((s) => s.number === n)!;
-                  const { pts } = computePointsFromMatches(so.matches, so.rebuys, so.number, state.season);
-                  const top = Math.max(...state.season.players.map((p) => pts.get(p) ?? 0), 1);
-                  const topPlayer = state.season.players
-                    .map((p) => ({ p, v: pts.get(p) ?? 0 }))
-                    .sort((a, b) => b.v - a.v || a.p.localeCompare(b.p))[0];
-                  const width = Math.round((topPlayer.v / top) * 24);
-                  return (
-                    <div key={n} className="rounded-xl border border-white/10 bg-black/30 p-3">
-                      <div className="flex items-center justify-between">
-                        <div className="font-semibold">Soirée {n}</div>
-                        <div className="text-white/70">Top: {topPlayer.p} ({topPlayer.v} pts)</div>
-                      </div>
-                      <div className="mt-2 font-mono text-sm">
-                        <span style={{ color: playerColors.get(topPlayer.p) ?? "#fff" }}>{"█".repeat(width)}</span>
-                        <span className="text-white/20">{"█".repeat(24 - width)}</span>
-                      </div>
+            <Section title="Évolution du classement (global)">
+              <div className="text-xs text-white/60 mb-2">Une seule courbe par joueur, rang 1 en haut.</div>
+              {rankingTimeline.labels.length === 0 ? (
+                <div className="text-sm text-white/70">Pas encore de soirées.</div>
+              ) : (
+                <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                  <div className="w-full overflow-x-auto">
+                    <div className="min-w-[640px]">
+                      <svg viewBox="0 0 700 260" className="w-full h-[260px]">
+                        {(() => {
+                          const w = 700;
+                          const h = 260;
+                          const padL = 40;
+                          const padR = 20;
+                          const padT = 20;
+                          const padB = 30;
+                          const playersCount = Math.max(state.season.players.length, 1);
+                          const pointsCount = Math.max(rankingTimeline.labels.length, 1);
+                          const xScale = (i: number) => {
+                            if (pointsCount === 1) return (w - padL - padR) / 2 + padL;
+                            return padL + (i / (pointsCount - 1)) * (w - padL - padR);
+                          };
+                          const yScale = (rank: number) => {
+                            if (playersCount === 1) return (h - padT - padB) / 2 + padT;
+                            return padT + ((rank - 1) / (playersCount - 1)) * (h - padT - padB);
+                          };
+
+                          return (
+                            <>
+                              {Array.from({ length: playersCount }).map((_, i) => {
+                                const y = yScale(i + 1);
+                                return (
+                                  <g key={`grid-${i}`}>
+                                    <line x1={padL} y1={y} x2={w - padR} y2={y} stroke="#ffffff1a" />
+                                    <text x={10} y={y + 4} fontSize="10" fill="#ffffff80">
+                                      {i + 1}
+                                    </text>
+                                  </g>
+                                );
+                              })}
+
+                              {rankingTimeline.labels.map((label, i) => {
+                                const x = xScale(i);
+                                return (
+                                  <text key={`x-${label}`} x={x} y={h - 8} fontSize="10" fill="#ffffff80" textAnchor="middle">
+                                    S{label}
+                                  </text>
+                                );
+                              })}
+
+                              {rankingTimeline.series.map((ser) => {
+                                if (ser.ranks.length === 0) return null;
+                                const d = ser.ranks
+                                  .map((rank, i) => `${i === 0 ? "M" : "L"} ${xScale(i)} ${yScale(rank)}`)
+                                  .join(" ");
+                                return (
+                                  <path
+                                    key={ser.player}
+                                    d={d}
+                                    fill="none"
+                                    stroke={playerColors.get(ser.player) ?? "#fff"}
+                                    strokeWidth="2"
+                                  />
+                                );
+                              })}
+                            </>
+                          );
+                        })()}
+                      </svg>
                     </div>
-                  );
-                })}
-              </div>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                    {rankingTimeline.series.map((ser) => (
+                      <div key={ser.player} className="inline-flex items-center gap-2 rounded-full bg-black/40 px-2 py-1">
+                        <span className="h-2.5 w-2.5 rounded-full" style={{ background: playerColors.get(ser.player) ?? "#ffffff33" }} />
+                        <span className="font-semibold">{ser.player}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </Section>
           </div>
         )}
