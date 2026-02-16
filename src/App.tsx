@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * Darts League (local-only, Safari)
@@ -147,6 +148,21 @@ type SnapshotEntry = {
 
 const SNAPSHOTS_KEY = "darts_league_snapshots_v1";
 const MAX_SNAPSHOTS = 30;
+const SYNC_CODE_KEY = "darts_league_sync_code_v1";
+const SYNC_ENABLED_KEY = "darts_league_sync_enabled_v1";
+
+const SUPABASE_URL = (import.meta as any)?.env?.VITE_SUPABASE_URL ?? "";
+const SUPABASE_ANON_KEY = (import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY ?? "";
+
+let __supabaseClient: SupabaseClient | null = null;
+
+function getSupabaseClient(): SupabaseClient | null {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  if (!__supabaseClient) {
+    __supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+  return __supabaseClient;
+}
 
 const PALETTE = [
   "#22c55e",
@@ -987,6 +1003,21 @@ export default function App() {
   const [exportText, setExportText] = useState("");
   const [snapshots, setSnapshots] = useState<SnapshotEntry[]>(() => loadSnapshots());
   const [readOnlyLink, setReadOnlyLink] = useState("");
+  const [syncCode, setSyncCode] = useState<string>(() => {
+    try {
+      return localStorage.getItem(SYNC_CODE_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const [syncEnabled, setSyncEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(SYNC_ENABLED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [syncStatus, setSyncStatus] = useState<string>("");
   const [readOnlyMode, setReadOnlyMode] = useState(false);
   const [newPlayerName, setNewPlayerName] = useState("");
   const [bulkPlayersText, setBulkPlayersText] = useState("");
@@ -1009,6 +1040,7 @@ export default function App() {
   const historyNavRef = useRef(false);
   const lastSerializedRef = useRef(JSON.stringify(state));
   const lastAutoSnapshotAtRef = useRef(0);
+  const skipNextCloudPushRef = useRef(false);
 
   const currentSeason = useMemo<Season>(() => {
     return currentSeasons.find((s: Season) => s.id === state.activeSeasonId) ?? currentSeasons[0];
@@ -1075,10 +1107,36 @@ export default function App() {
   }, [compactMode]);
 
   useEffect(() => {
+    try {
+      localStorage.setItem(SYNC_CODE_KEY, syncCode);
+      localStorage.setItem(SYNC_ENABLED_KEY, syncEnabled ? "1" : "0");
+    } catch {}
+  }, [syncCode, syncEnabled]);
+
+  useEffect(() => {
     if (!currentSeasons.find((s: Season) => s.id === state.activeSeasonId)) {
       setState((prev) => ({ ...prev, activeSeasonId: prev.seasons[0]?.id ?? prev.activeSeasonId }));
     }
   }, [state.activeSeasonId, currentSeasons]);
+
+  useEffect(() => {
+    if (!syncEnabled || !normName(syncCode)) return;
+    pullCloudState();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncEnabled, syncCode]);
+
+  useEffect(() => {
+    if (!syncEnabled || !normName(syncCode) || readOnlyMode) return;
+    if (skipNextCloudPushRef.current) {
+      skipNextCloudPushRef.current = false;
+      return;
+    }
+    const t = window.setTimeout(() => {
+      pushCloudState();
+    }, 800);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, syncEnabled, syncCode, readOnlyMode]);
 
   useEffect(() => {
     const exists = currentSeason.soirees.some((s: Soiree) => s.number === selectedSoireeNumber);
@@ -1351,6 +1409,58 @@ export default function App() {
       await navigator.clipboard.writeText(url);
     } catch {}
     logAudit("Lien lecture seule");
+  }
+
+  async function pullCloudState() {
+    const code = normName(syncCode).toUpperCase();
+    if (!code) {
+      setSyncStatus("Code de synchronisation manquant.");
+      return;
+    }
+    const sb = getSupabaseClient();
+    if (!sb) {
+      setSyncStatus("Supabase non configuré (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY).");
+      return;
+    }
+    setSyncStatus("Chargement cloud…");
+    const { data, error } = await sb
+      .from("darts_states")
+      .select("payload, updated_at")
+      .eq("room_code", code)
+      .maybeSingle();
+
+    if (error) {
+      setSyncStatus(`Erreur cloud: ${error.message}`);
+      return;
+    }
+    if (!data?.payload) {
+      setSyncStatus("Aucune sauvegarde cloud trouvée pour ce code.");
+      return;
+    }
+    skipNextCloudPushRef.current = true;
+    setState(sanitizeState(data.payload));
+    setSyncStatus(`Cloud chargé (${new Date(data.updated_at ?? Date.now()).toLocaleString("fr-FR")}).`);
+    logAudit("Sync pull cloud", code);
+  }
+
+  async function pushCloudState() {
+    const code = normName(syncCode).toUpperCase();
+    if (!code) return;
+    const sb = getSupabaseClient();
+    if (!sb) return;
+    const { error } = await sb.from("darts_states").upsert(
+      {
+        room_code: code,
+        payload: state,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "room_code" }
+    );
+    if (error) {
+      setSyncStatus(`Erreur cloud: ${error.message}`);
+      return;
+    }
+    setSyncStatus(`Cloud sauvegardé (${new Date().toLocaleTimeString("fr-FR")}).`);
   }
 
   function updateFunMode(mutator: (funMode: FunModeState) => FunModeState) {
@@ -4178,6 +4288,39 @@ export default function App() {
                         • {issue}
                       </div>
                     ))}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                  <div className="text-xs text-white/60">Sync multi-appareils (beta)</div>
+                  <label className="mt-2 inline-flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-white/20 bg-black"
+                      checked={syncEnabled}
+                      onChange={(e) => setSyncEnabled(e.target.checked)}
+                    />
+                    Activer la synchronisation cloud
+                  </label>
+                  <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[1fr,auto,auto]">
+                    <input
+                      className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/25"
+                      placeholder="Code ligue (ex: RAZOR-2026)"
+                      value={syncCode}
+                      onChange={(e) => setSyncCode(e.target.value.toUpperCase())}
+                    />
+                    <Button variant="ghost" onClick={() => pullCloudState()} disabled={!syncEnabled || !normName(syncCode)}>
+                      Pull cloud
+                    </Button>
+                    <Button variant="ghost" onClick={() => pushCloudState()} disabled={!syncEnabled || !normName(syncCode)}>
+                      Push cloud
+                    </Button>
+                  </div>
+                  <div className="mt-2 text-xs text-white/60">
+                    {syncStatus || "Configure Supabase puis utilise le même code sur iPhone et ordinateur."}
+                  </div>
+                  <div className="mt-1 text-[11px] text-white/50">
+                    SQL minimal: table `darts_states(room_code text primary key, payload jsonb not null, updated_at timestamptz not null default now())`.
                   </div>
                 </div>
 
