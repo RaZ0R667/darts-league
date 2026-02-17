@@ -999,6 +999,8 @@ export default function App() {
   const [importText, setImportText] = useState("");
   const [showExport, setShowExport] = useState(false);
   const [exportText, setExportText] = useState("");
+  const [showAttendanceModal, setShowAttendanceModal] = useState(false);
+  const [absentPlayersSelection, setAbsentPlayersSelection] = useState<string[]>([]);
   const [snapshots, setSnapshots] = useState<SnapshotEntry[]>(() => loadSnapshots());
   const [readOnlyLink, setReadOnlyLink] = useState("");
   const [syncCode, setSyncCode] = useState<string>(() => {
@@ -1876,32 +1878,30 @@ export default function App() {
     importFileRef.current?.click();
   }
 
-  function startNewSoiree() {
+  function openAttendanceModal() {
+    if (readOnlyMode) return;
     if (currentSeason.players.length < 4) {
       alert("Ajoute d’abord les joueurs (au moins 4 pour jouer poules + demis + finales).");
       return;
     }
+    setAbsentPlayersSelection([]);
+    setShowAttendanceModal(true);
+  }
 
-    const absentInput = window.prompt(
-      "Joueurs absents ce soir ? (séparés par virgule, vide = tout le monde présent)",
-      ""
-    );
-    if (absentInput === null) return;
-    const absents = absentInput
-      .split(/[,;\n]/g)
-      .map((x) => normName(x))
-      .filter(isNonEmptyString);
+  function toggleAbsentPlayer(name: string) {
+    setAbsentPlayersSelection((prev) => (prev.includes(name) ? prev.filter((x) => x !== name) : [...prev, name]));
+  }
 
-    const presentPlayers = currentSeason.players.filter(
-      (p) => !absents.some((a) => a.localeCompare(p, undefined, { sensitivity: "base" }) === 0)
-    );
+  function startNewSoiree(absentPlayers: string[] = []) {
+    const absents = absentPlayers.map(normName).filter(isNonEmptyString);
+    const presentPlayers = currentSeason.players.filter((p) => !absents.includes(p));
 
     if (presentPlayers.length < 4) {
       alert("Pas assez de joueurs présents (minimum 4).");
       return;
     }
     if (presentPlayers.length > 8) {
-      alert("Maximum 8 joueurs présents. Retire des absents ou limite la liste.");
+      alert("Maximum 8 joueurs présents. Marque des absents pour descendre à 8.");
       return;
     }
 
@@ -1912,6 +1912,7 @@ export default function App() {
       );
       if (!proceed) return;
     }
+
     updateSeason((season) => {
       const nextNumber = Math.max(...season.soirees.map((s) => s.number)) + 1;
       const players = season.players.filter((p) => presentPlayers.includes(p));
@@ -1935,72 +1936,72 @@ export default function App() {
         pools = { A, B };
       }
 
-          const poolA = poolMatchesFor4(pools.A, "A").map((m) => ({ ...m, format: effectiveRules.defaultPoolFormat }));
-          const poolB = poolMatchesFor4(pools.B, "B").map((m) => ({ ...m, format: effectiveRules.defaultPoolFormat }));
-          const inter = interleavePools(poolA, poolB);
+      const poolA = poolMatchesFor4(pools.A, "A").map((m) => ({ ...m, format: effectiveRules.defaultPoolFormat }));
+      const poolB = poolMatchesFor4(pools.B, "B").map((m) => ({ ...m, format: effectiveRules.defaultPoolFormat }));
+      const inter = interleavePools(poolA, poolB);
 
-          const finals: CoreMatch[] = [
-            {
-              id: uid("m"),
-              order: inter.length + 1,
-              phase: "DEMI",
-              status: "PENDING",
-              pool: null,
-              format: effectiveRules.defaultPoolFormat,
-              bo: "BO3",
-              maxTurns: 10,
-              a: "",
-              b: "",
-              winner: "",
-              checkout100: false,
-              checkoutBy: "",
-            },
-            {
-              id: uid("m"),
-              order: inter.length + 2,
-              phase: "DEMI",
-              status: "PENDING",
-              pool: null,
-              format: effectiveRules.defaultPoolFormat,
-              bo: "BO3",
-              maxTurns: 10,
-              a: "",
-              b: "",
-              winner: "",
-              checkout100: false,
-              checkoutBy: "",
-            },
-            {
-              id: uid("m"),
-              order: inter.length + 3,
-              phase: "PFINAL",
-              status: "PENDING",
-              pool: null,
-              format: effectiveRules.defaultPoolFormat,
-              bo: "BO3",
-              maxTurns: 10,
-              a: "",
-              b: "",
-              winner: "",
-              checkout100: false,
-              checkoutBy: "",
-            },
-            {
-              id: uid("m"),
-              order: inter.length + 4,
-              phase: "FINAL",
-              status: "PENDING",
-              pool: null,
-              format: effectiveRules.defaultFinalFormat,
-              bo: "BO3",
-              maxTurns: 10,
-              a: "",
-              b: "",
-              winner: "",
-              checkout100: false,
-              checkoutBy: "",
-            },
-          ];
+      const finals: CoreMatch[] = [
+        {
+          id: uid("m"),
+          order: inter.length + 1,
+          phase: "DEMI",
+          status: "PENDING",
+          pool: null,
+          format: effectiveRules.defaultPoolFormat,
+          bo: "BO3",
+          maxTurns: 10,
+          a: "",
+          b: "",
+          winner: "",
+          checkout100: false,
+          checkoutBy: "",
+        },
+        {
+          id: uid("m"),
+          order: inter.length + 2,
+          phase: "DEMI",
+          status: "PENDING",
+          pool: null,
+          format: effectiveRules.defaultPoolFormat,
+          bo: "BO3",
+          maxTurns: 10,
+          a: "",
+          b: "",
+          winner: "",
+          checkout100: false,
+          checkoutBy: "",
+        },
+        {
+          id: uid("m"),
+          order: inter.length + 3,
+          phase: "PFINAL",
+          status: "PENDING",
+          pool: null,
+          format: effectiveRules.defaultPoolFormat,
+          bo: "BO3",
+          maxTurns: 10,
+          a: "",
+          b: "",
+          winner: "",
+          checkout100: false,
+          checkoutBy: "",
+        },
+        {
+          id: uid("m"),
+          order: inter.length + 4,
+          phase: "FINAL",
+          status: "PENDING",
+          pool: null,
+          format: effectiveRules.defaultFinalFormat,
+          bo: "BO3",
+          maxTurns: 10,
+          a: "",
+          b: "",
+          winner: "",
+          checkout100: false,
+          checkoutBy: "",
+        },
+      ];
 
       const newSoiree: Soiree = {
         id: uid("s"),
@@ -2018,6 +2019,8 @@ export default function App() {
 
       return { ...season, soirees: [...season.soirees, newSoiree] };
     });
+
+    setShowAttendanceModal(false);
     logAudit("Nouvelle soirée générée", `${presentPlayers.length} joueurs présents`);
 
     setTimeout(() => {
@@ -2396,9 +2399,9 @@ export default function App() {
               {tab === "FUN" ? "Retour Saison" : "Mode Fun"}
             </Button>
             {!tvMode && (
-              <Button variant="ghost" onClick={() => startNewSoiree()}>
-                Générer une soirée
-              </Button>
+            <Button variant="ghost" onClick={() => openAttendanceModal()}>
+              Générer une soirée
+            </Button>
             )}
             {!tvMode && (
               <Button variant="danger" onClick={() => resetAll()}>
@@ -4538,6 +4541,59 @@ export default function App() {
                 </div>
               </div>
             </Section>
+          </div>
+        )}
+
+        {showAttendanceModal && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm p-4 grid place-items-center">
+            <div className="w-full max-w-xl rounded-2xl border border-white/10 bg-[#0f172a] p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-base font-semibold">Présence joueurs — nouvelle soirée</h3>
+                  <div className="text-xs text-white/60">Clique sur un nom pour le marquer absent.</div>
+                </div>
+                <Pill>Présents: {currentSeason.players.length - absentPlayersSelection.length}</Pill>
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {currentSeason.players.map((p) => {
+                  const isAbsent = absentPlayersSelection.includes(p);
+                  return (
+                    <button
+                      key={p}
+                      className={`rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+                        isAbsent ? "border-red-400 bg-red-500/20 text-red-100" : "border-white/10 bg-white/5 text-white hover:bg-white/10"
+                      }`}
+                      onClick={() => toggleAbsentPlayer(p)}
+                    >
+                      {p}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-4 flex flex-wrap justify-end gap-2">
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setShowAttendanceModal(false);
+                    setAbsentPlayersSelection([]);
+                  }}
+                >
+                  Annuler
+                </Button>
+                <Button
+                  variant="primary"
+                  disabled={readOnlyMode || currentSeason.players.length - absentPlayersSelection.length < 4}
+                  onClick={() => startNewSoiree(absentPlayersSelection)}
+                >
+                  Générer la soirée
+                </Button>
+              </div>
+              {currentSeason.players.length - absentPlayersSelection.length < 4 && (
+                <div className="mt-2 text-xs text-orange-300">Il faut au moins 4 joueurs présents.</div>
+              )}
+            </div>
           </div>
         )}
 
