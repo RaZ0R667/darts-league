@@ -159,6 +159,12 @@ type SnapshotEntry = {
   state: AppState;
 };
 
+type SharedPayload = {
+  state: AppState;
+  rulesPdfData?: string;
+  rulesPdfName?: string;
+};
+
 const SNAPSHOTS_KEY = "darts_league_snapshots_v1";
 const MAX_SNAPSHOTS = 30;
 const SYNC_CODE_KEY = "darts_league_sync_code_v1";
@@ -997,6 +1003,15 @@ function saveState(state: AppState) {
   } catch {}
 }
 
+function parseSharedPayload(raw: any): SharedPayload {
+  const wrapped = raw && typeof raw === "object" && raw.state && typeof raw.state === "object";
+  const statePayload = wrapped ? raw.state : raw;
+  const parsedState = sanitizeState(statePayload);
+  const rulesPdfData = wrapped && typeof raw.rulesPdfData === "string" ? raw.rulesPdfData : undefined;
+  const rulesPdfName = wrapped && typeof raw.rulesPdfName === "string" ? raw.rulesPdfName : undefined;
+  return { state: parsedState, rulesPdfData, rulesPdfName };
+}
+
 function downloadTextFile(filename: string, text: string, mime = "application/json") {
   const blob = new Blob([text], { type: mime });
   const url = URL.createObjectURL(blob);
@@ -1156,6 +1171,7 @@ export default function App() {
   });
   const [syncStatus, setSyncStatus] = useState<string>("");
   const [readOnlyMode, setReadOnlyMode] = useState(false);
+  const [readOnlyRoomCode, setReadOnlyRoomCode] = useState("");
   const [newPlayerName, setNewPlayerName] = useState("");
   const [bulkPlayersText, setBulkPlayersText] = useState("");
   const [editingPlayer, setEditingPlayer] = useState<string | null>(null);
@@ -1184,6 +1200,7 @@ export default function App() {
   }, [currentSeasons, state.activeSeasonId]);
 
   useEffect(() => {
+    if (readOnlyMode) return;
     if (savingRef.current) window.clearTimeout(savingRef.current);
     savingRef.current = window.setTimeout(() => {
       saveState(state);
@@ -1191,10 +1208,14 @@ export default function App() {
     return () => {
       if (savingRef.current) window.clearTimeout(savingRef.current);
     };
-  }, [state]);
+  }, [state, readOnlyMode]);
 
   useEffect(() => {
     const serialized = JSON.stringify(state);
+    if (readOnlyMode) {
+      lastSerializedRef.current = serialized;
+      return;
+    }
     if (historyNavRef.current) {
       historyNavRef.current = false;
       lastSerializedRef.current = serialized;
@@ -1220,21 +1241,28 @@ export default function App() {
       saveSnapshots(next);
       lastAutoSnapshotAtRef.current = now;
     }
-  }, [state, snapshots]);
+  }, [state, snapshots, readOnlyMode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const hash = window.location.hash || "";
+    if (hash.startsWith("#public=")) {
+      const code = normName(decodeURIComponent(hash.slice("#public=".length))).toUpperCase();
+      if (!code) return;
+      setReadOnlyMode(true);
+      setReadOnlyRoomCode(code);
+      setTab("CLASSEMENT");
+      return;
+    }
     if (!hash.startsWith("#readonly=")) return;
     try {
       const payload = hash.slice("#readonly=".length);
       const decoded = decodeURIComponent(escape(window.atob(payload)));
       const parsed = JSON.parse(decoded);
-      const roPayload = parsed?.state ? parsed.state : parsed;
-      const ro = sanitizeState(roPayload);
-      setState(ro);
-      if (typeof parsed?.rulesPdfData === "string") setRulesPdfData(parsed.rulesPdfData);
-      if (typeof parsed?.rulesPdfName === "string") setRulesPdfName(parsed.rulesPdfName);
+      const shared = parseSharedPayload(parsed);
+      setState(shared.state);
+      if (typeof shared.rulesPdfData === "string") setRulesPdfData(shared.rulesPdfData);
+      if (typeof shared.rulesPdfName === "string") setRulesPdfName(shared.rulesPdfName);
       setTab("CLASSEMENT");
       setReadOnlyMode(true);
     } catch {}
@@ -1254,11 +1282,12 @@ export default function App() {
   }, [syncCode, syncEnabled]);
 
   useEffect(() => {
+    if (readOnlyMode) return;
     try {
       localStorage.setItem(RULES_PDF_DATA_KEY, rulesPdfData);
       localStorage.setItem(RULES_PDF_NAME_KEY, rulesPdfName);
     } catch {}
-  }, [rulesPdfData, rulesPdfName]);
+  }, [rulesPdfData, rulesPdfName, readOnlyMode]);
 
   useEffect(() => {
     if (!currentSeasons.find((s: Season) => s.id === state.activeSeasonId)) {
@@ -1273,10 +1302,21 @@ export default function App() {
   }, [readOnlyMode, tab]);
 
   useEffect(() => {
+    if (readOnlyMode) return;
     if (!syncEnabled || !normName(syncCode)) return;
     pullCloudState();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncEnabled, syncCode]);
+  }, [syncEnabled, syncCode, readOnlyMode]);
+
+  useEffect(() => {
+    if (!readOnlyMode || !normName(readOnlyRoomCode)) return;
+    pullCloudState({ codeOverride: readOnlyRoomCode, silent: true });
+    const t = window.setInterval(() => {
+      pullCloudState({ codeOverride: readOnlyRoomCode, silent: true });
+    }, 8000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readOnlyMode, readOnlyRoomCode]);
 
   useEffect(() => {
     if (!syncEnabled || !normName(syncCode) || readOnlyMode) return;
@@ -1557,13 +1597,19 @@ export default function App() {
   }
 
   async function generateReadOnlyLink() {
-    const serialized = JSON.stringify({
-      state,
-      rulesPdfData,
-      rulesPdfName,
-    });
-    const payload = window.btoa(unescape(encodeURIComponent(serialized)));
-    const url = `${window.location.origin}${window.location.pathname}#readonly=${payload}`;
+    const code = normName(syncCode).toUpperCase();
+    let url = "";
+    if (syncEnabled && code) {
+      url = `${window.location.origin}${window.location.pathname}#public=${encodeURIComponent(code)}`;
+    } else {
+      const serialized = JSON.stringify({
+        state,
+        rulesPdfData,
+        rulesPdfName,
+      });
+      const payload = window.btoa(unescape(encodeURIComponent(serialized)));
+      url = `${window.location.origin}${window.location.pathname}#readonly=${payload}`;
+    }
     setReadOnlyLink(url);
     try {
       await navigator.clipboard.writeText(url);
@@ -1571,18 +1617,19 @@ export default function App() {
     logAudit("Lien lecture seule");
   }
 
-  async function pullCloudState() {
-    const code = normName(syncCode).toUpperCase();
+  async function pullCloudState(options?: { codeOverride?: string; silent?: boolean }) {
+    const code = normName(options?.codeOverride ?? syncCode).toUpperCase();
+    const silent = Boolean(options?.silent);
     if (!code) {
-      setSyncStatus("Code de synchronisation manquant.");
+      if (!silent) setSyncStatus("Code de synchronisation manquant.");
       return;
     }
     const sb = getSupabaseClient();
     if (!sb) {
-      setSyncStatus("Supabase non configuré (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY).");
+      if (!silent) setSyncStatus("Supabase non configuré (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY).");
       return;
     }
-    setSyncStatus("Chargement cloud…");
+    if (!silent) setSyncStatus("Chargement cloud…");
     const { data, error } = await sb
       .from("darts_states")
       .select("payload, updated_at")
@@ -1590,16 +1637,19 @@ export default function App() {
       .maybeSingle();
 
     if (error) {
-      setSyncStatus(`Erreur cloud: ${error.message}`);
+      if (!silent) setSyncStatus(`Erreur cloud: ${error.message}`);
       return;
     }
     if (!data?.payload) {
-      setSyncStatus("Aucune sauvegarde cloud trouvée pour ce code.");
+      if (!silent) setSyncStatus("Aucune sauvegarde cloud trouvée pour ce code.");
       return;
     }
     skipNextCloudPushRef.current = true;
-    setState(sanitizeState(data.payload));
-    setSyncStatus(`Cloud chargé (${new Date(data.updated_at ?? Date.now()).toLocaleString("fr-FR")}).`);
+    const shared = parseSharedPayload(data.payload);
+    setState(shared.state);
+    if (typeof shared.rulesPdfData === "string") setRulesPdfData(shared.rulesPdfData);
+    if (typeof shared.rulesPdfName === "string") setRulesPdfName(shared.rulesPdfName);
+    if (!silent) setSyncStatus(`Cloud chargé (${new Date(data.updated_at ?? Date.now()).toLocaleString("fr-FR")}).`);
     logAudit("Sync pull cloud", code);
   }
 
@@ -1608,10 +1658,15 @@ export default function App() {
     if (!code) return;
     const sb = getSupabaseClient();
     if (!sb) return;
+    const payload: SharedPayload = {
+      state,
+      rulesPdfData,
+      rulesPdfName,
+    };
     const { error } = await sb.from("darts_states").upsert(
       {
         room_code: code,
-        payload: state,
+        payload,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "room_code" }
@@ -4619,6 +4674,11 @@ export default function App() {
 
                 <div className="rounded-xl border border-white/10 bg-black/30 p-3">
                   <div className="text-xs text-white/60">Partage simplifié</div>
+                  <div className="mt-1 text-[11px] text-white/50">
+                    {syncEnabled && normName(syncCode)
+                      ? "Avec sync cloud active: lien live permanent (toujours à jour)."
+                      : "Sans sync cloud: lien snapshot figé au moment de la génération."}
+                  </div>
                   <div className="mt-2 flex flex-wrap gap-2">
                     <Button variant="ghost" onClick={() => exportSeasonSummaryText()}>
                       Export résumé (.txt)
