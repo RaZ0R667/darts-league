@@ -69,6 +69,7 @@ type Soiree = {
   pools: { A: string[]; B: string[] };
   matches: CoreMatch[];
   rebuys: RebuyMatch[];
+  absentPlayers?: string[];
   payments?: Record<string, boolean>;
   financeNotes?: string;
   qualifiersOverride?: {
@@ -325,6 +326,93 @@ function interleavePools(a: CoreMatch[], b: CoreMatch[]) {
   return out.map((m, idx) => ({ ...m, order: idx + 1 }));
 }
 
+function isFairSoireeMode(soiree: Soiree) {
+  return (soiree.absentPlayers?.length ?? 0) > 0;
+}
+
+function computePoolRows(
+  soiree: Soiree,
+  pool: "A" | "B",
+  season: Season,
+  rules: RulesConfig
+) {
+  const players = soiree.pools[pool];
+  const relevant = soiree.matches.filter((m: CoreMatch) => m.phase === "POULE" && m.pool === pool);
+  const { pts, wins, bonus } = computePointsFromMatches(relevant, [], soiree.number, season, rules);
+  const fairMode = isFairSoireeMode(soiree);
+
+  const playedMap = new Map<string, number>();
+  for (const p of players) playedMap.set(p, 0);
+  for (const m of relevant) {
+    const done = Boolean(normName(m.winner));
+    if (!done) continue;
+    if (m.a) playedMap.set(m.a, (playedMap.get(m.a) ?? 0) + 1);
+    if (m.b) playedMap.set(m.b, (playedMap.get(m.b) ?? 0) + 1);
+  }
+
+  const rows = players.map((p: string) => {
+    const played = playedMap.get(p) ?? 0;
+    const pPts = pts.get(p) ?? 0;
+    return {
+      name: p,
+      pts: pPts,
+      wins: wins.get(p) ?? 0,
+      bonus: bonus.get(p) ?? 0,
+      played,
+      avg: played > 0 ? pPts / played : 0,
+    };
+  });
+
+  rows.sort((a, b) => {
+    if (fairMode && b.avg !== a.avg) return b.avg - a.avg;
+    if (b.pts !== a.pts) return b.pts - a.pts;
+    if (b.wins !== a.wins) return b.wins - a.wins;
+    if (b.bonus !== a.bonus) return b.bonus - a.bonus;
+    return a.name.localeCompare(b.name);
+  });
+  return rows;
+}
+
+function computeSoireeRankingPoints(soiree: Soiree, season: Season, rules: RulesConfig) {
+  const participants = uniq([...soiree.pools.A, ...soiree.pools.B]).filter(isNonEmptyString);
+  if (!participants.length) return new Map<string, number>();
+
+  const poolA = computePoolRows(soiree, "A", season, rules);
+  const poolB = computePoolRows(soiree, "B", season, rules);
+
+  const ov = soiree.qualifiersOverride ?? {};
+  const A1 = normName(ov.A1 || poolA[0]?.name || "");
+  const A2 = normName(ov.A2 || poolA[1]?.name || "");
+  const B1 = normName(ov.B1 || poolB[0]?.name || "");
+  const B2 = normName(ov.B2 || poolB[1]?.name || "");
+
+  const final = soiree.matches.find((m: CoreMatch) => m.phase === "FINAL");
+  const pfinal = soiree.matches.find((m: CoreMatch) => m.phase === "PFINAL");
+  const first = normName(final?.winner ?? "");
+  const second = first && first === normName(final?.a ?? "") ? normName(final?.b ?? "") : first && first === normName(final?.b ?? "") ? normName(final?.a ?? "") : "";
+  const third = normName(pfinal?.winner ?? "");
+  const fourth = third && third === normName(pfinal?.a ?? "") ? normName(pfinal?.b ?? "") : third && third === normName(pfinal?.b ?? "") ? normName(pfinal?.a ?? "") : "";
+
+  const fallbackStats = computePointsFromMatches(soiree.matches, [], soiree.number, season, rules);
+  const fallback = participants
+    .map((p: string) => ({
+      name: p,
+      pts: fallbackStats.pts.get(p) ?? 0,
+      wins: fallbackStats.wins.get(p) ?? 0,
+      bonus: fallbackStats.bonus.get(p) ?? 0,
+    }))
+    .sort((a, b) => b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name))
+    .map((x) => x.name);
+
+  const manualTop = [first, second, third, fourth, A1, B1, A2, B2].filter(isNonEmptyString);
+  const ordered = uniq([...manualTop, ...fallback, ...participants]).filter((p) => participants.includes(p));
+
+  const map = new Map<string, number>();
+  const n = ordered.length;
+  ordered.forEach((name, idx) => map.set(name, Math.max(1, n - idx)));
+  return map;
+}
+
 function computePointsFromMatches(
   matches: CoreMatch[],
   rebuyMatches: RebuyMatch[],
@@ -424,7 +512,12 @@ function aggregateSeasonStats(season: Season, rules: RulesConfig = STANDARD_RULE
 
   for (const s of season.soirees) {
     const { pts: p, wins: w, bonus: b } = computePointsFromMatches(s.matches, s.rebuys, s.number, season, rules);
-    for (const [k, v] of p.entries()) add(pts, k, v);
+    if (isFairSoireeMode(s)) {
+      const soireePoints = computeSoireeRankingPoints(s, season, rules);
+      for (const [k, v] of soireePoints.entries()) add(pts, k, v);
+    } else {
+      for (const [k, v] of p.entries()) add(pts, k, v);
+    }
     for (const [k, v] of w.entries()) add(wins, k, v);
     for (const [k, v] of b.entries()) add(bonus, k, v);
   }
@@ -710,6 +803,7 @@ function sanitizeState(raw: any): AppState {
           pools: { A: poolsA, B: poolsB },
           matches: matches.sort((a: CoreMatch, b: CoreMatch) => a.order - b.order),
           rebuys: rebuys.sort((a: RebuyMatch, b: RebuyMatch) => a.createdAt - b.createdAt),
+          absentPlayers: Array.isArray(s?.absentPlayers) ? s.absentPlayers.map(normName).filter(isNonEmptyString) : [],
           payments,
           financeNotes: normName(s?.financeNotes) || "",
           qualifiersOverride:
@@ -1172,31 +1266,14 @@ export default function App() {
   const currentSoiree = useMemo(() => {
     return currentSeason.soirees.find((s: Soiree) => s.number === selectedSoireeNumber) ?? currentSeason.soirees[0];
   }, [currentSeason.soirees, selectedSoireeNumber]);
+  const fairSoireeMode = useMemo(() => isFairSoireeMode(currentSoiree), [currentSoiree]);
 
 
   const currentPoolStandings = useMemo(() => {
-    const poolMatches = currentSoiree.matches.filter((m: CoreMatch) => m.phase === "POULE");
-
-    const calcPool = (pool: "A" | "B") => {
-      const players = currentSoiree.pools[pool];
-      const relevant = poolMatches.filter((m: CoreMatch) => m.pool === pool);
-
-      const { pts, wins, bonus } = computePointsFromMatches(relevant, [], currentSoiree.number, currentSeason, effectiveRules);
-
-      const rows = players.map((p: string) => ({
-        name: p,
-        pts: pts.get(p) ?? 0,
-        wins: wins.get(p) ?? 0,
-        bonus: bonus.get(p) ?? 0,
-      }));
-
-      rows.sort((a: { name: string; pts: number; wins: number; bonus: number }, b: { name: string; pts: number; wins: number; bonus: number }) =>
-        b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name)
-      );
-      return rows;
+    return {
+      A: computePoolRows(currentSoiree, "A", currentSeason, effectiveRules),
+      B: computePoolRows(currentSoiree, "B", currentSeason, effectiveRules),
     };
-
-    return { A: calcPool("A"), B: calcPool("B") };
   }, [currentSoiree.matches, currentSoiree.pools, currentSoiree.number, currentSeason, effectiveRules]);
 
   const allSoireeNumbers = useMemo(() => {
@@ -2007,6 +2084,7 @@ export default function App() {
         id: uid("s"),
         number: nextNumber,
         createdAt: Date.now(),
+        absentPlayers: absents,
         pools,
         matches: [...inter, ...finals],
         rebuys: [],
@@ -2099,26 +2177,8 @@ export default function App() {
   }
 
   function recalcFinalsFromPools() {
-    const poolMatches = currentSoiree.matches.filter((m: CoreMatch) => m.phase === "POULE");
-
-    const calcPool = (pool: "A" | "B") => {
-      const players = currentSoiree.pools[pool];
-      const relevant = poolMatches.filter((m: CoreMatch) => m.pool === pool);
-      const { pts, wins, bonus } = computePointsFromMatches(relevant, [], currentSoiree.number, currentSeason, effectiveRules);
-      const rows = players.map((p: string) => ({
-        name: p,
-        pts: pts.get(p) ?? 0,
-        wins: wins.get(p) ?? 0,
-        bonus: bonus.get(p) ?? 0,
-      }));
-      rows.sort((a: { name: string; pts: number; wins: number; bonus: number }, b: { name: string; pts: number; wins: number; bonus: number }) =>
-        b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name)
-      );
-      return rows;
-    };
-
-    const A = calcPool("A");
-    const B = calcPool("B");
+    const A = computePoolRows(currentSoiree, "A", currentSeason, effectiveRules);
+    const B = computePoolRows(currentSoiree, "B", currentSeason, effectiveRules);
 
     const ov = currentSoiree.qualifiersOverride ?? {};
     const A1 = ov.A1 || (A[0]?.name ?? "");
@@ -2777,7 +2837,10 @@ export default function App() {
             </div>
 
             <div className="space-y-4">
-              <Section title="Classement des poules">
+              <Section
+                title="Classement des poules"
+                right={fairSoireeMode ? <Pill color="#eab308">Mode équité: moyenne / match</Pill> : undefined}
+              >
                 <div className="hidden md:grid grid-cols-1 gap-3">
                   {(["A", "B"] as const).map((pool) => (
                     <div key={pool} className="rounded-xl border border-white/10 bg-black/30 p-3">
@@ -2788,16 +2851,18 @@ export default function App() {
                             <th className="py-1 text-left">#</th>
                             <th className="py-1 text-left">Joueur</th>
                             <th className="py-1 text-right">Pts</th>
+                            {fairSoireeMode && <th className="py-1 text-right">Avg</th>}
                             <th className="py-1 text-right">V</th>
                             <th className="py-1 text-right">B</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {currentPoolStandings[pool].map((r: { name: string; pts: number; wins: number; bonus: number }, idx: number) => (
+                          {currentPoolStandings[pool].map((r, idx: number) => (
                             <tr key={r.name} className="border-t border-white/10">
                               <td className="py-1">{idx + 1}</td>
                               <td className="py-1 font-semibold">{r.name}</td>
                               <td className="py-1 text-right">{r.pts}</td>
+                              {fairSoireeMode && <td className="py-1 text-right">{r.avg.toFixed(2)}</td>}
                               <td className="py-1 text-right">{r.wins}</td>
                               <td className="py-1 text-right">{r.bonus}</td>
                             </tr>
@@ -2813,10 +2878,10 @@ export default function App() {
                     <div key={pool} className="rounded-xl border border-white/10 bg-black/30 p-3">
                       <div className="flex items-center justify-between">
                         <div className="font-semibold">Poule {pool}</div>
-                        <Pill>Pts ➜ V ➜ Bonus</Pill>
+                        <Pill>{fairSoireeMode ? "Avg ➜ Pts ➜ V ➜ Bonus" : "Pts ➜ V ➜ Bonus"}</Pill>
                       </div>
                       <div className="mt-2 space-y-1">
-                        {currentPoolStandings[pool].map((r: { name: string; pts: number; wins: number; bonus: number }, idx: number) => (
+                        {currentPoolStandings[pool].map((r, idx: number) => (
                           <div key={r.name} className="flex items-center justify-between rounded-lg bg-black/20 px-2 py-1">
                             <div className="flex items-center gap-2">
                               <span className="text-white/60 w-5">{idx + 1}.</span>
@@ -2824,6 +2889,12 @@ export default function App() {
                               <span className="font-semibold">{r.name}</span>
                             </div>
                             <div className="flex items-center gap-3 text-xs">
+                              {fairSoireeMode && (
+                                <>
+                                  <span className="text-white/70">AVG</span>
+                                  <span className="font-bold">{r.avg.toFixed(2)}</span>
+                                </>
+                              )}
                               <span className="text-white/70">PTS</span>
                               <span className="font-bold">{r.pts}</span>
                               <span className="text-white/70">V</span>
@@ -3236,6 +3307,9 @@ export default function App() {
                           <div className="text-base font-semibold">Soirée {s.number}</div>
                           <div className="flex items-center gap-2">
                             <div className="text-xs text-white/60">Rebuys: {s.rebuys.length}</div>
+                            {(s.absentPlayers?.length ?? 0) > 0 && (
+                              <div className="text-xs text-yellow-300">Absents: {s.absentPlayers?.length ?? 0}</div>
+                            )}
                             <Button
                               variant="danger"
                               disabled={readOnlyMode}
