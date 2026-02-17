@@ -15,6 +15,18 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 type Phase = "POULE" | "DEMI" | "PFINAL" | "FINAL";
 type MatchStatus = "PENDING" | "VALIDATED" | "CONTESTED";
 type RulesProfile = "STANDARD" | "FUN" | "CUSTOM";
+type AppTab =
+  | "SOIREE"
+  | "CLASSEMENT"
+  | "HISTO"
+  | "REBUY"
+  | "FUN"
+  | "H2H"
+  | "FINANCES"
+  | "ARBITRAGE"
+  | "REGLES"
+  | "PARAMS"
+  | "SAISONS";
 
 type RulesConfig = {
   winPoints: number;
@@ -1092,9 +1104,7 @@ export default function App() {
   const importFileRef = useRef<HTMLInputElement | null>(null);
   const rulesPdfFileRef = useRef<HTMLInputElement | null>(null);
   const [state, setState] = useState<AppState>(() => loadState());
-  const [tab, setTab] = useState<
-    "SOIREE" | "CLASSEMENT" | "HISTO" | "REBUY" | "FUN" | "H2H" | "FINANCES" | "ARBITRAGE" | "REGLES" | "PARAMS" | "SAISONS"
-  >("SOIREE");
+  const [tab, setTab] = useState<AppTab>("SOIREE");
   const [tvMode, setTvMode] = useState(false);
   const [, setTvIndex] = useState(0);
   const [timelinePlay, setTimelinePlay] = useState(false);
@@ -1220,8 +1230,11 @@ export default function App() {
       const payload = hash.slice("#readonly=".length);
       const decoded = decodeURIComponent(escape(window.atob(payload)));
       const parsed = JSON.parse(decoded);
-      const ro = sanitizeState(parsed);
+      const roPayload = parsed?.state ? parsed.state : parsed;
+      const ro = sanitizeState(roPayload);
       setState(ro);
+      if (typeof parsed?.rulesPdfData === "string") setRulesPdfData(parsed.rulesPdfData);
+      if (typeof parsed?.rulesPdfName === "string") setRulesPdfName(parsed.rulesPdfName);
       setTab("CLASSEMENT");
       setReadOnlyMode(true);
     } catch {}
@@ -1252,6 +1265,12 @@ export default function App() {
       setState((prev) => ({ ...prev, activeSeasonId: prev.seasons[0]?.id ?? prev.activeSeasonId }));
     }
   }, [state.activeSeasonId, currentSeasons]);
+
+  useEffect(() => {
+    if (!readOnlyMode) return;
+    const allowed: AppTab[] = ["CLASSEMENT", "HISTO", "H2H", "REGLES"];
+    if (!allowed.includes(tab)) setTab("CLASSEMENT");
+  }, [readOnlyMode, tab]);
 
   useEffect(() => {
     if (!syncEnabled || !normName(syncCode)) return;
@@ -1404,12 +1423,32 @@ export default function App() {
     }
   }, [funLiveIndex, funLiveMatches.length]);
 
-  const tvTabs: Array<"SOIREE" | "CLASSEMENT" | "H2H"> = ["SOIREE", "CLASSEMENT", "H2H"];
+  const tvTabs: Array<Extract<AppTab, "SOIREE" | "CLASSEMENT" | "H2H">> = ["SOIREE", "CLASSEMENT", "H2H"];
   const tvLabels: Record<string, string> = {
     SOIREE: "Soirée",
     CLASSEMENT: "Classement",
     H2H: "Confrontations",
   };
+
+  const allNavTabs: Array<[AppTab, string]> = [
+    ["SOIREE", "Soirée"],
+    ["CLASSEMENT", "Classement"],
+    ["HISTO", "Historique"],
+    ["REBUY", "Re-buy"],
+    ["H2H", "Confrontations"],
+    ["SAISONS", "Saisons"],
+    ["FINANCES", "Finances"],
+    ["ARBITRAGE", "Arbitrage"],
+    ["REGLES", "Règles"],
+    ["PARAMS", "Paramètres"],
+  ];
+  const readOnlyNavTabs: Array<[AppTab, string]> = [
+    ["CLASSEMENT", "Classement"],
+    ["HISTO", "Historique"],
+    ["H2H", "Confrontations"],
+    ["REGLES", "Règles"],
+  ];
+  const navTabs = readOnlyMode ? readOnlyNavTabs : allNavTabs;
 
   useEffect(() => {
     if (!tvMode) return;
@@ -1518,7 +1557,11 @@ export default function App() {
   }
 
   async function generateReadOnlyLink() {
-    const serialized = JSON.stringify(state);
+    const serialized = JSON.stringify({
+      state,
+      rulesPdfData,
+      rulesPdfName,
+    });
     const payload = window.btoa(unescape(encodeURIComponent(serialized)));
     const url = `${window.location.origin}${window.location.pathname}#readonly=${payload}`;
     setReadOnlyLink(url);
@@ -2544,15 +2587,17 @@ export default function App() {
             <Button variant={tvMode ? "primary" : "ghost"} onClick={() => setTvMode((v) => !v)}>
               {tvMode ? "Quitter Mode TV" : "Mode TV"}
             </Button>
-            <Button variant={tab === "FUN" ? "primary" : "ghost"} onClick={() => setTab(tab === "FUN" ? "SOIREE" : "FUN")}>
-              {tab === "FUN" ? "Retour Saison" : "Mode Fun"}
-            </Button>
-            {!tvMode && (
+            {!readOnlyMode && (
+              <Button variant={tab === "FUN" ? "primary" : "ghost"} onClick={() => setTab(tab === "FUN" ? "SOIREE" : "FUN")}>
+                {tab === "FUN" ? "Retour Saison" : "Mode Fun"}
+              </Button>
+            )}
+            {!tvMode && !readOnlyMode && (
             <Button variant="ghost" onClick={() => openAttendanceModal()}>
               Générer une soirée
             </Button>
             )}
-            {!tvMode && (
+            {!tvMode && !readOnlyMode && (
               <Button variant="danger" onClick={() => resetAll()}>
                 Reset complet
               </Button>
@@ -2609,20 +2654,7 @@ export default function App() {
         </div>
 
         <div className="mb-6 hidden md:flex gap-2 overflow-x-auto pb-2 tv-hide">
-          {(
-            [
-              ["SOIREE", "Soirée"],
-              ["CLASSEMENT", "Classement"],
-              ["HISTO", "Historique"],
-              ["REBUY", "Re-buy"],
-              ["H2H", "Confrontations"],
-              ["SAISONS", "Saisons"],
-              ["FINANCES", "Finances"],
-              ["ARBITRAGE", "Arbitrage"],
-              ["REGLES", "Règles"],
-              ["PARAMS", "Paramètres"],
-            ] as const
-          ).map(([k, label]) => (
+          {navTabs.map(([k, label]) => (
             <button
               key={k}
               className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-semibold transition ${
@@ -2637,20 +2669,7 @@ export default function App() {
 
         <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-white/10 bg-[#0b0f17]/95 backdrop-blur tv-hide">
           <div className="mx-auto flex max-w-6xl items-center justify-between px-3 py-2">
-            {(
-              [
-                ["SOIREE", "Soirée"],
-                ["CLASSEMENT", "Classement"],
-                ["HISTO", "Historique"],
-                ["REBUY", "Re-buy"],
-                ["H2H", "H2H"],
-                ["SAISONS", "Saisons"],
-                ["FINANCES", "Finances"],
-                ["ARBITRAGE", "Arbitrage"],
-                ["REGLES", "Règles"],
-                ["PARAMS", "Params"],
-              ] as const
-            ).map(([k, label]) => (
+            {navTabs.map(([k, label]) => (
               <button
                 key={k}
                 className={`flex-1 rounded-xl px-2 py-2 text-[11px] font-semibold transition ${
