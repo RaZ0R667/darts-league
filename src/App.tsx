@@ -290,15 +290,13 @@ function buildRoundRobinMatches(players: string[], format: 301 | 501): CoreMatch
 }
 
 function poolMatchesFor4(players: string[], pool: "A" | "B"): CoreMatch[] {
-  const [p1, p2, p3, p4] = players;
-  const pairs: Array<[string, string]> = [
-    [p1, p2],
-    [p3, p4],
-    [p1, p3],
-    [p2, p4],
-    [p1, p4],
-    [p2, p3],
-  ];
+  const valid = players.map(normName).filter(isNonEmptyString);
+  const pairs: Array<[string, string]> = [];
+  for (let i = 0; i < valid.length; i++) {
+    for (let j = i + 1; j < valid.length; j++) {
+      pairs.push([valid[i], valid[j]]);
+    }
+  }
 
   return pairs.map(([a, b], idx) => ({
     id: uid("m"),
@@ -1858,10 +1856,34 @@ export default function App() {
   }
 
   function startNewSoiree() {
-    if (currentSeason.players.length < 2) {
-      alert("Ajoute d’abord les joueurs (au moins 2).");
+    if (currentSeason.players.length < 4) {
+      alert("Ajoute d’abord les joueurs (au moins 4 pour jouer poules + demis + finales).");
       return;
     }
+
+    const absentInput = window.prompt(
+      "Joueurs absents ce soir ? (séparés par virgule, vide = tout le monde présent)",
+      ""
+    );
+    if (absentInput === null) return;
+    const absents = absentInput
+      .split(/[,;\n]/g)
+      .map((x) => normName(x))
+      .filter(isNonEmptyString);
+
+    const presentPlayers = currentSeason.players.filter(
+      (p) => !absents.some((a) => a.localeCompare(p, undefined, { sensitivity: "base" }) === 0)
+    );
+
+    if (presentPlayers.length < 4) {
+      alert("Pas assez de joueurs présents (minimum 4).");
+      return;
+    }
+    if (presentPlayers.length > 8) {
+      alert("Maximum 8 joueurs présents. Retire des absents ou limite la liste.");
+      return;
+    }
+
     const issues = runSeasonDiagnostics(currentSeason);
     if (issues.length > 0) {
       const proceed = window.confirm(
@@ -1871,18 +1893,25 @@ export default function App() {
     }
     updateSeason((season) => {
       const nextNumber = Math.max(...season.soirees.map((s) => s.number)) + 1;
-      const players = season.players;
+      const players = season.players.filter((p) => presentPlayers.includes(p));
 
       let pools: { A: string[]; B: string[] };
       if (nextNumber <= 2) {
         const sh = shuffle(players);
-        pools = { A: sh.slice(0, 4), B: sh.slice(4, 8) };
+        const split = Math.ceil(sh.length / 2);
+        pools = { A: sh.slice(0, split), B: sh.slice(split) };
       } else {
-        const ranked = aggregateSeasonStats(season, effectiveRules).table.map((x) => x.name);
-        pools = {
-          A: [ranked[0], ranked[2], ranked[4], ranked[6]].filter(Boolean),
-          B: [ranked[1], ranked[3], ranked[5], ranked[7]].filter(Boolean),
-        };
+        const ranked = aggregateSeasonStats(season, effectiveRules)
+          .table
+          .map((x) => x.name)
+          .filter((name) => players.includes(name));
+        const A: string[] = [];
+        const B: string[] = [];
+        ranked.forEach((name, idx) => {
+          if (idx % 2 === 0) A.push(name);
+          else B.push(name);
+        });
+        pools = { A, B };
       }
 
           const poolA = poolMatchesFor4(pools.A, "A").map((m) => ({ ...m, format: effectiveRules.defaultPoolFormat }));
@@ -1968,7 +1997,7 @@ export default function App() {
 
       return { ...season, soirees: [...season.soirees, newSoiree] };
     });
-    logAudit("Nouvelle soirée générée");
+    logAudit("Nouvelle soirée générée", `${presentPlayers.length} joueurs présents`);
 
     setTimeout(() => {
       const max = Math.max(...currentSeason.soirees.map((s: Soiree) => s.number)) + 1;
