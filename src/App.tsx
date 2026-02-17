@@ -151,6 +151,8 @@ const SNAPSHOTS_KEY = "darts_league_snapshots_v1";
 const MAX_SNAPSHOTS = 30;
 const SYNC_CODE_KEY = "darts_league_sync_code_v1";
 const SYNC_ENABLED_KEY = "darts_league_sync_enabled_v1";
+const RULES_PDF_DATA_KEY = "darts_league_rules_pdf_data_v1";
+const RULES_PDF_NAME_KEY = "darts_league_rules_pdf_name_v1";
 
 const SUPABASE_URL = (import.meta as any)?.env?.VITE_SUPABASE_URL ?? "";
 const SUPABASE_ANON_KEY = (import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY ?? "";
@@ -1088,9 +1090,10 @@ function Select({
 
 export default function App() {
   const importFileRef = useRef<HTMLInputElement | null>(null);
+  const rulesPdfFileRef = useRef<HTMLInputElement | null>(null);
   const [state, setState] = useState<AppState>(() => loadState());
   const [tab, setTab] = useState<
-    "SOIREE" | "CLASSEMENT" | "HISTO" | "REBUY" | "FUN" | "H2H" | "FINANCES" | "ARBITRAGE" | "PARAMS" | "SAISONS"
+    "SOIREE" | "CLASSEMENT" | "HISTO" | "REBUY" | "FUN" | "H2H" | "FINANCES" | "ARBITRAGE" | "REGLES" | "PARAMS" | "SAISONS"
   >("SOIREE");
   const [tvMode, setTvMode] = useState(false);
   const [, setTvIndex] = useState(0);
@@ -1109,6 +1112,20 @@ export default function App() {
   const [importText, setImportText] = useState("");
   const [showExport, setShowExport] = useState(false);
   const [exportText, setExportText] = useState("");
+  const [rulesPdfData, setRulesPdfData] = useState<string>(() => {
+    try {
+      return localStorage.getItem(RULES_PDF_DATA_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const [rulesPdfName, setRulesPdfName] = useState<string>(() => {
+    try {
+      return localStorage.getItem(RULES_PDF_NAME_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  });
   const [showAttendanceModal, setShowAttendanceModal] = useState(false);
   const [absentPlayersSelection, setAbsentPlayersSelection] = useState<string[]>([]);
   const [snapshots, setSnapshots] = useState<SnapshotEntry[]>(() => loadSnapshots());
@@ -1222,6 +1239,13 @@ export default function App() {
       localStorage.setItem(SYNC_ENABLED_KEY, syncEnabled ? "1" : "0");
     } catch {}
   }, [syncCode, syncEnabled]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(RULES_PDF_DATA_KEY, rulesPdfData);
+      localStorage.setItem(RULES_PDF_NAME_KEY, rulesPdfName);
+    } catch {}
+  }, [rulesPdfData, rulesPdfName]);
 
   useEffect(() => {
     if (!currentSeasons.find((s: Season) => s.id === state.activeSeasonId)) {
@@ -1971,6 +1995,43 @@ export default function App() {
     importFileRef.current?.click();
   }
 
+  function triggerRulesPdfFile() {
+    if (readOnlyMode) return;
+    rulesPdfFileRef.current?.click();
+  }
+
+  function onRulesPdfSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    if (readOnlyMode) return;
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.type !== "application/pdf") {
+      alert("Merci de sélectionner un fichier PDF.");
+      e.currentTarget.value = "";
+      return;
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      alert("PDF trop lourd (> 4 Mo). Utilise une version plus légère.");
+      e.currentTarget.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const data = String(reader.result ?? "");
+      setRulesPdfData(data);
+      setRulesPdfName(file.name);
+      logAudit("Règlement PDF importé", file.name);
+    };
+    reader.readAsDataURL(file);
+    e.currentTarget.value = "";
+  }
+
+  function clearRulesPdf() {
+    if (readOnlyMode) return;
+    setRulesPdfData("");
+    setRulesPdfName("");
+    logAudit("Règlement PDF supprimé");
+  }
+
   function openAttendanceModal() {
     if (readOnlyMode) return;
     if (currentSeason.players.length < 4) {
@@ -2558,6 +2619,7 @@ export default function App() {
               ["SAISONS", "Saisons"],
               ["FINANCES", "Finances"],
               ["ARBITRAGE", "Arbitrage"],
+              ["REGLES", "Règles"],
               ["PARAMS", "Paramètres"],
             ] as const
           ).map(([k, label]) => (
@@ -2585,6 +2647,7 @@ export default function App() {
                 ["SAISONS", "Saisons"],
                 ["FINANCES", "Finances"],
                 ["ARBITRAGE", "Arbitrage"],
+                ["REGLES", "Règles"],
                 ["PARAMS", "Params"],
               ] as const
             ).map(([k, label]) => (
@@ -2601,7 +2664,7 @@ export default function App() {
           </div>
         </div>
 
-        {tab !== "PARAMS" && tab !== "SAISONS" && tab !== "FUN" && (
+        {tab !== "PARAMS" && tab !== "SAISONS" && tab !== "FUN" && tab !== "REGLES" && (
           <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 sm:flex-row sm:items-center sm:justify-between tv-hide">
             <div className="text-sm text-white/70">Soirée sélectionnée</div>
             <div className="w-full sm:w-56">
@@ -4105,6 +4168,42 @@ export default function App() {
                 })}
             </div>
           </Section>
+        )}
+
+        {tab === "REGLES" && (
+          <div className="grid grid-cols-1 gap-4">
+            <Section
+              title="Règlement (PDF)"
+              right={
+                <div className="flex gap-2">
+                  <Button variant="ghost" onClick={() => triggerRulesPdfFile()} disabled={readOnlyMode}>
+                    Importer PDF
+                  </Button>
+                  <Button variant="ghost" onClick={() => window.open(rulesPdfData, "_blank")} disabled={!rulesPdfData}>
+                    Ouvrir
+                  </Button>
+                  <Button variant="danger" onClick={() => clearRulesPdf()} disabled={!rulesPdfData || readOnlyMode}>
+                    Supprimer
+                  </Button>
+                </div>
+              }
+            >
+              <input ref={rulesPdfFileRef} type="file" accept="application/pdf" className="hidden" onChange={onRulesPdfSelected} />
+              <div className="mb-3 text-sm text-white/70">
+                Ajoute ici le règlement officiel pour qu’il soit lisible directement dans l’application.
+                {rulesPdfName ? <span className="ml-2 text-white">Fichier: {rulesPdfName}</span> : null}
+              </div>
+              {rulesPdfData ? (
+                <div className="rounded-xl overflow-hidden border border-white/10 bg-black/40">
+                  <iframe title="Règlement PDF" src={rulesPdfData} className="w-full h-[70vh]" />
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-white/20 bg-black/30 p-8 text-sm text-white/60">
+                  Aucun PDF importé.
+                </div>
+              )}
+            </Section>
+          </div>
         )}
 
         {tab === "SAISONS" && (
