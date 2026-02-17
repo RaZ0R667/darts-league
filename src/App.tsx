@@ -376,6 +376,7 @@ function computePoolRows(
 function computeSoireeRankingPoints(soiree: Soiree, season: Season, rules: RulesConfig) {
   const participants = uniq([...soiree.pools.A, ...soiree.pools.B]).filter(isNonEmptyString);
   if (!participants.length) return new Map<string, number>();
+  const fairMode = isFairSoireeMode(soiree);
 
   const poolA = computePoolRows(soiree, "A", season, rules);
   const poolB = computePoolRows(soiree, "B", season, rules);
@@ -393,18 +394,33 @@ function computeSoireeRankingPoints(soiree: Soiree, season: Season, rules: Rules
   const third = normName(pfinal?.winner ?? "");
   const fourth = third && third === normName(pfinal?.a ?? "") ? normName(pfinal?.b ?? "") : third && third === normName(pfinal?.b ?? "") ? normName(pfinal?.a ?? "") : "";
 
-  const fallbackStats = computePointsFromMatches(soiree.matches, [], soiree.number, season, rules);
-  const fallback = participants
-    .map((p: string) => ({
-      name: p,
-      pts: fallbackStats.pts.get(p) ?? 0,
-      wins: fallbackStats.wins.get(p) ?? 0,
-      bonus: fallbackStats.bonus.get(p) ?? 0,
-    }))
-    .sort((a, b) => b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name))
+  const fallback = fairMode
+    ? [...poolA, ...poolB]
+        .slice()
+        .sort((a, b) => b.avg - a.avg || b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name))
+        .map((x) => x.name)
+    : (() => {
+        const fallbackStats = computePointsFromMatches(soiree.matches, [], soiree.number, season, rules);
+        return participants
+          .map((p: string) => ({
+            name: p,
+            pts: fallbackStats.pts.get(p) ?? 0,
+            wins: fallbackStats.wins.get(p) ?? 0,
+            bonus: fallbackStats.bonus.get(p) ?? 0,
+          }))
+          .sort((a, b) => b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name))
+          .map((x) => x.name);
+      })();
+
+  const top4Global = [...poolA, ...poolB]
+    .slice()
+    .sort((a, b) => b.avg - a.avg || b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name))
+    .slice(0, 4)
     .map((x) => x.name);
 
-  const manualTop = [first, second, third, fourth, A1, B1, A2, B2].filter(isNonEmptyString);
+  const manualTop = fairMode
+    ? [first, second, third, fourth, ...top4Global].filter(isNonEmptyString)
+    : [first, second, third, fourth, A1, B1, A2, B2].filter(isNonEmptyString);
   const ordered = uniq([...manualTop, ...fallback, ...participants]).filter((p) => participants.includes(p));
 
   const map = new Map<string, number>();
@@ -2179,12 +2195,24 @@ export default function App() {
   function recalcFinalsFromPools() {
     const A = computePoolRows(currentSoiree, "A", currentSeason, effectiveRules);
     const B = computePoolRows(currentSoiree, "B", currentSeason, effectiveRules);
+    const fairMode = isFairSoireeMode(currentSoiree);
 
     const ov = currentSoiree.qualifiersOverride ?? {};
     const A1 = ov.A1 || (A[0]?.name ?? "");
     const A2 = ov.A2 || (A[1]?.name ?? "");
     const B1 = ov.B1 || (B[0]?.name ?? "");
     const B2 = ov.B2 || (B[1]?.name ?? "");
+
+    const globalTop4 = [...A, ...B]
+      .slice()
+      .sort((a, b) => b.avg - a.avg || b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name))
+      .slice(0, 4)
+      .map((x) => x.name);
+
+    const D1A = fairMode ? globalTop4[0] ?? "" : A1;
+    const D1B = fairMode ? globalTop4[3] ?? "" : B2;
+    const D2A = fairMode ? globalTop4[1] ?? "" : B1;
+    const D2B = fairMode ? globalTop4[2] ?? "" : A2;
 
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
@@ -2198,12 +2226,12 @@ export default function App() {
           if (m.phase !== "DEMI") return m;
           const demiIndex = demisSorted.findIndex((x: CoreMatch) => x.id === m.id);
           if (demiIndex === 0) {
-            const winner = m.winner && (m.winner === A1 || m.winner === B2) ? m.winner : "";
-            return { ...m, a: A1, b: B2, winner, status: winner ? "VALIDATED" : "PENDING" };
+            const winner = m.winner && (m.winner === D1A || m.winner === D1B) ? m.winner : "";
+            return { ...m, a: D1A, b: D1B, winner, status: winner ? "VALIDATED" : "PENDING" };
           }
           if (demiIndex === 1) {
-            const winner = m.winner && (m.winner === B1 || m.winner === A2) ? m.winner : "";
-            return { ...m, a: B1, b: A2, winner, status: winner ? "VALIDATED" : "PENDING" };
+            const winner = m.winner && (m.winner === D2A || m.winner === D2B) ? m.winner : "";
+            return { ...m, a: D2A, b: D2B, winner, status: winner ? "VALIDATED" : "PENDING" };
           }
           return m;
         });
@@ -2911,61 +2939,69 @@ export default function App() {
               </Section>
 
               <div className="mt-3 rounded-xl border border-white/10 bg-black/30 p-3">
-                <div className="text-xs text-white/60 mb-2">Départage manuel (si égalité / match sec)</div>
-
-                <div className="grid grid-cols-1 gap-3">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <div>
-                      <div className="text-xs text-white/60 mb-1">Poule A — #1</div>
-                      <Select
-                        value={normName(currentSoiree.qualifiersOverride?.A1 ?? "")}
-                        onChange={(v) => setQualifiersOverride({ A1: normName(v) })}
-                        options={currentSoiree.pools.A}
-                        placeholder="Auto…"
-                      />
-                    </div>
-                    <div>
-                      <div className="text-xs text-white/60 mb-1">Poule A — #2</div>
-                      <Select
-                        value={normName(currentSoiree.qualifiersOverride?.A2 ?? "")}
-                        onChange={(v) => setQualifiersOverride({ A2: normName(v) })}
-                        options={currentSoiree.pools.A}
-                        placeholder="Auto…"
-                      />
-                    </div>
+                {fairSoireeMode ? (
+                  <div className="text-sm text-white/70">
+                    Mode absents actif: qualification en demis par <span className="font-semibold text-white">Top 4 global</span> (moyenne points/match), avec affiches 1v4 et 2v3.
                   </div>
+                ) : (
+                  <>
+                    <div className="text-xs text-white/60 mb-2">Départage manuel (si égalité / match sec)</div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <div>
-                      <div className="text-xs text-white/60 mb-1">Poule B — #1</div>
-                      <Select
-                        value={normName(currentSoiree.qualifiersOverride?.B1 ?? "")}
-                        onChange={(v) => setQualifiersOverride({ B1: normName(v) })}
-                        options={currentSoiree.pools.B}
-                        placeholder="Auto…"
-                      />
+                    <div className="grid grid-cols-1 gap-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div>
+                          <div className="text-xs text-white/60 mb-1">Poule A — #1</div>
+                          <Select
+                            value={normName(currentSoiree.qualifiersOverride?.A1 ?? "")}
+                            onChange={(v) => setQualifiersOverride({ A1: normName(v) })}
+                            options={currentSoiree.pools.A}
+                            placeholder="Auto…"
+                          />
+                        </div>
+                        <div>
+                          <div className="text-xs text-white/60 mb-1">Poule A — #2</div>
+                          <Select
+                            value={normName(currentSoiree.qualifiersOverride?.A2 ?? "")}
+                            onChange={(v) => setQualifiersOverride({ A2: normName(v) })}
+                            options={currentSoiree.pools.A}
+                            placeholder="Auto…"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div>
+                          <div className="text-xs text-white/60 mb-1">Poule B — #1</div>
+                          <Select
+                            value={normName(currentSoiree.qualifiersOverride?.B1 ?? "")}
+                            onChange={(v) => setQualifiersOverride({ B1: normName(v) })}
+                            options={currentSoiree.pools.B}
+                            placeholder="Auto…"
+                          />
+                        </div>
+                        <div>
+                          <div className="text-xs text-white/60 mb-1">Poule B — #2</div>
+                          <Select
+                            value={normName(currentSoiree.qualifiersOverride?.B2 ?? "")}
+                            onChange={(v) => setQualifiersOverride({ B2: normName(v) })}
+                            options={currentSoiree.pools.B}
+                            placeholder="Auto…"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <Button variant="ghost" onClick={() => setQualifiersOverride({ A1: "", A2: "", B1: "", B2: "" })}>
+                          Réinitialiser (auto)
+                        </Button>
+                      </div>
+
+                      <div className="text-[11px] text-white/50">
+                        Si tu fais un match sec pour départager, règle l’ordre #1/#2 ici puis clique “Calculer demis”.
+                      </div>
                     </div>
-                    <div>
-                      <div className="text-xs text-white/60 mb-1">Poule B — #2</div>
-                      <Select
-                        value={normName(currentSoiree.qualifiersOverride?.B2 ?? "")}
-                        onChange={(v) => setQualifiersOverride({ B2: normName(v) })}
-                        options={currentSoiree.pools.B}
-                        placeholder="Auto…"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2">
-                    <Button variant="ghost" onClick={() => setQualifiersOverride({ A1: "", A2: "", B1: "", B2: "" })}>
-                      Réinitialiser (auto)
-                    </Button>
-                  </div>
-
-                  <div className="text-[11px] text-white/50">
-                    Si tu fais un match sec pour départager, règle l’ordre #1/#2 ici puis clique “Calculer demis”.
-                  </div>
-                </div>
+                  </>
+                )}
               </div>
 
               <Section title="Podium & gains (soirée)">
