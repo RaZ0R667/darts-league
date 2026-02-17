@@ -928,7 +928,7 @@ function Button({
   disabled,
 }: {
   children: React.ReactNode;
-  onClick?: () => void;
+  onClick?: (e?: React.MouseEvent<HTMLButtonElement>) => void;
   variant?: "primary" | "ghost" | "danger";
   disabled?: boolean;
 }) {
@@ -940,7 +940,7 @@ function Button({
         ? "bg-red-500 text-white hover:bg-red-400"
         : "bg-white/10 text-white hover:bg-white/15";
   return (
-    <button onClick={onClick} disabled={disabled} className={`${base} ${styles} ${disabled ? "opacity-50" : ""}`}>
+    <button onClick={(e) => onClick?.(e)} disabled={disabled} className={`${base} ${styles} ${disabled ? "opacity-50" : ""}`}>
       {children}
     </button>
   );
@@ -1778,6 +1778,27 @@ export default function App() {
       const activeSeasonId = prev.activeSeasonId === id ? seasons[0].id : prev.activeSeasonId;
       return { ...prev, seasons, activeSeasonId };
     });
+  }
+
+  function deleteSoiree(soireeNumber: number) {
+    if (currentSeason.soirees.length <= 1) {
+      alert("Tu dois garder au moins une soirée dans la saison.");
+      return;
+    }
+    const ok = window.confirm(`Supprimer définitivement la soirée ${soireeNumber} ?`);
+    if (!ok) return;
+
+    const remaining = currentSeason.soirees.filter((s) => s.number !== soireeNumber);
+    updateSeason((season) => ({
+      ...season,
+      soirees: season.soirees.filter((s) => s.number !== soireeNumber),
+    }));
+
+    if (selectedSoireeNumber === soireeNumber) {
+      const next = remaining.length ? Math.max(...remaining.map((s) => s.number)) : 1;
+      setSelectedSoireeNumber(next);
+    }
+    logAudit("Suppression soirée", `Soirée ${soireeNumber}`);
   }
 
   function setQualifiersOverride(patch: Partial<NonNullable<Soiree["qualifiersOverride"]>>) {
@@ -3200,17 +3221,29 @@ export default function App() {
                     );
                     const podium = rows.slice(0, 3);
                     return (
-                      <button
+                      <div
                         key={s.id}
-                        className="w-full rounded-2xl border border-white/10 bg-black/30 p-4 text-left hover:bg-black/40"
+                        className="w-full rounded-2xl border border-white/10 bg-black/30 p-4 text-left hover:bg-black/40 cursor-pointer"
                         onClick={() => {
                           setSelectedSoireeNumber(s.number);
                           setTab("SOIREE");
                         }}
                       >
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between gap-2">
                           <div className="text-base font-semibold">Soirée {s.number}</div>
-                          <div className="text-xs text-white/60">Rebuys: {s.rebuys.length}</div>
+                          <div className="flex items-center gap-2">
+                            <div className="text-xs text-white/60">Rebuys: {s.rebuys.length}</div>
+                            <Button
+                              variant="danger"
+                              disabled={readOnlyMode}
+                              onClick={(e) => {
+                                e?.stopPropagation();
+                                deleteSoiree(s.number);
+                              }}
+                            >
+                              Supprimer
+                            </Button>
+                          </div>
                         </div>
                         <div className="mt-2 text-sm text-white/70">
                           Podium: {(() => {
@@ -3233,7 +3266,7 @@ export default function App() {
                           </Pill>
                           <Pill>Matchs: {s.matches.length}</Pill>
                         </div>
-                      </button>
+                      </div>
                     );
                   })}
               </div>
