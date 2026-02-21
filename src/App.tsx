@@ -63,6 +63,8 @@ type CoreMatch = {
   winner: "" | string;
   checkout100: boolean;
   checkoutBy: "" | "A" | "B";
+  startedAt?: number;
+  endedAt?: number;
 };
 
 type RebuyMatch = {
@@ -79,6 +81,8 @@ type Soiree = {
   number: number;
   dateLabel?: string;
   createdAt: number;
+  startedAt?: number;
+  endedAt?: number;
   pools: { A: string[]; B: string[] };
   matches: CoreMatch[];
   rebuys: RebuyMatch[];
@@ -816,6 +820,8 @@ function sanitizeState(raw: any): AppState {
             winner,
             checkout100: Boolean(inferredCheckoutBy),
             checkoutBy: inferredCheckoutBy,
+            startedAt: Number.isFinite(Number(m?.startedAt)) ? Number(m.startedAt) : undefined,
+            endedAt: Number.isFinite(Number(m?.endedAt)) ? Number(m.endedAt) : undefined,
           };
         });
 
@@ -857,6 +863,8 @@ function sanitizeState(raw: any): AppState {
           number: clampInt(Number(s?.number ?? idx + 1), 1, 999),
           dateLabel: normName(s?.dateLabel) || undefined,
           createdAt: Number(s?.createdAt ?? Date.now()),
+          startedAt: Number.isFinite(Number(s?.startedAt)) ? Number(s.startedAt) : undefined,
+          endedAt: Number.isFinite(Number(s?.endedAt)) ? Number(s.endedAt) : undefined,
           pools: { A: poolsA, B: poolsB },
           matches: matches.sort((a: CoreMatch, b: CoreMatch) => a.order - b.order),
           rebuys: rebuys.sort((a: RebuyMatch, b: RebuyMatch) => a.createdAt - b.createdAt),
@@ -925,6 +933,8 @@ function sanitizeState(raw: any): AppState {
       winner: normName(m?.winner),
       checkout100: Boolean(m?.checkout100),
       checkoutBy: m?.checkoutBy === "A" || m?.checkoutBy === "B" ? m.checkoutBy : "",
+      startedAt: Number.isFinite(Number(m?.startedAt)) ? Number(m.startedAt) : undefined,
+      endedAt: Number.isFinite(Number(m?.endedAt)) ? Number(m.endedAt) : undefined,
     });
     const funMatches: CoreMatch[] = rawFunMatches.map(sanitizeFunMatch);
     const funFinals: CoreMatch[] = rawFunFinals.map(sanitizeFunMatch);
@@ -1052,6 +1062,21 @@ function formatEUR(n: number) {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(v);
 }
 
+function formatDuration(ms: number) {
+  const safe = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(safe / 3600);
+  const m = Math.floor((safe % 3600) / 60);
+  const s = safe % 60;
+  if (h > 0) return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function getMatchDurationMs(match: CoreMatch, now: number) {
+  if (!match.startedAt) return 0;
+  const end = match.endedAt ?? now;
+  return Math.max(0, end - match.startedAt);
+}
+
 function Pill({ children, color }: { children: React.ReactNode; color?: string }) {
   return (
     <span
@@ -1142,6 +1167,7 @@ export default function App() {
   const importFileRef = useRef<HTMLInputElement | null>(null);
   const rulesPdfFileRef = useRef<HTMLInputElement | null>(null);
   const [state, setState] = useState<AppState>(() => loadState());
+  const [clockNow, setClockNow] = useState<number>(() => Date.now());
   const [tab, setTab] = useState<AppTab>("SOIREE");
   const [tvMode, setTvMode] = useState(false);
   const [, setTvIndex] = useState(0);
@@ -1221,6 +1247,11 @@ export default function App() {
   const currentSeason = useMemo<Season>(() => {
     return currentSeasons.find((s: Season) => s.id === state.activeSeasonId) ?? currentSeasons[0];
   }, [currentSeasons, state.activeSeasonId]);
+
+  useEffect(() => {
+    const t = window.setInterval(() => setClockNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (readOnlyMode) return;
@@ -1512,6 +1543,32 @@ export default function App() {
       absentPlayers,
     };
   }, [currentSoiree.matches, soireeAttendance, soireePlayers]);
+
+  const soireeTiming = useMemo(() => {
+    const startedAt =
+      currentSoiree.startedAt ??
+      currentSoiree.matches
+        .map((m: CoreMatch) => m.startedAt)
+        .filter((x): x is number => typeof x === "number" && Number.isFinite(x))
+        .sort((a: number, b: number) => a - b)[0];
+    const endedAt = currentSoiree.endedAt;
+    const elapsedMs = startedAt ? Math.max(0, (endedAt ?? clockNow) - startedAt) : 0;
+    const completedDurations = currentSoiree.matches
+      .map((m: CoreMatch) => (m.startedAt && m.endedAt ? Math.max(0, m.endedAt - m.startedAt) : 0))
+      .filter((x: number) => x > 0);
+    const avgMatchMs = completedDurations.length
+      ? Math.round(completedDurations.reduce((a: number, b: number) => a + b, 0) / completedDurations.length)
+      : 0;
+    const longestMatchMs = completedDurations.length ? Math.max(...completedDurations) : 0;
+    return {
+      startedAt,
+      endedAt,
+      elapsedMs,
+      completedCount: completedDurations.length,
+      avgMatchMs,
+      longestMatchMs,
+    };
+  }, [currentSoiree.startedAt, currentSoiree.endedAt, currentSoiree.matches, clockNow]);
 
 
   const currentPoolStandings = useMemo(() => {
@@ -2343,6 +2400,44 @@ export default function App() {
     });
   }
 
+  function startSoireeTimer() {
+    const now = Date.now();
+    updateSeason((season) => {
+      const soirees = season.soirees.map((s: Soiree) => {
+        if (s.number !== currentSoiree.number) return s;
+        return { ...s, startedAt: s.startedAt ?? now, endedAt: undefined };
+      });
+      return { ...season, soirees };
+    });
+  }
+
+  function stopSoireeTimer() {
+    const now = Date.now();
+    updateSeason((season) => {
+      const soirees = season.soirees.map((s: Soiree) => {
+        if (s.number !== currentSoiree.number) return s;
+        if (!s.startedAt) return s;
+        return { ...s, endedAt: now };
+      });
+      return { ...season, soirees };
+    });
+  }
+
+  function startMatchTimer(matchId: string) {
+    const now = Date.now();
+    updateSeason((season) => {
+      const soirees = season.soirees.map((s: Soiree) => {
+        if (s.number !== currentSoiree.number) return s;
+        const matches = s.matches.map((m: CoreMatch) => {
+          if (m.id !== matchId) return m;
+          return { ...m, startedAt: now, endedAt: undefined };
+        });
+        return { ...s, startedAt: s.startedAt ?? now, endedAt: undefined, matches };
+      });
+      return { ...season, soirees };
+    });
+  }
+
   function startNewSoiree(absentPlayers: string[] = []) {
     const absents = absentPlayers.map(normName).filter(isNonEmptyString);
     const presentPlayers = currentSeason.players.filter((p) => !absents.includes(p));
@@ -2488,6 +2583,7 @@ export default function App() {
   }
 
   function setMatchWinner(matchId: string, winner: string) {
+    const now = Date.now();
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -2501,9 +2597,17 @@ export default function App() {
             status: valid ? "VALIDATED" : "PENDING",
             checkoutBy: !m.a || !m.b ? "" : m.checkoutBy,
             checkout100: !m.a || !m.b ? false : Boolean(m.checkoutBy),
+            startedAt: valid ? m.startedAt ?? now : m.startedAt,
+            endedAt: valid ? now : undefined,
           } as CoreMatch;
         });
-        return { ...s, matches };
+        const hasPending = matches.some((m: CoreMatch) => !normName(m.winner));
+        return {
+          ...s,
+          startedAt: s.startedAt ?? now,
+          endedAt: hasPending ? undefined : s.endedAt ?? now,
+          matches,
+        };
       });
       return { ...season, soirees };
     });
@@ -2590,11 +2694,11 @@ export default function App() {
           const demiIndex = demisSorted.findIndex((x: CoreMatch) => x.id === m.id);
           if (demiIndex === 0) {
             const winner = m.winner && (m.winner === D1A || m.winner === D1B) ? m.winner : "";
-            return { ...m, a: D1A, b: D1B, winner, status: winner ? "VALIDATED" : "PENDING" };
+            return { ...m, a: D1A, b: D1B, winner, status: winner ? "VALIDATED" : "PENDING", endedAt: winner ? m.endedAt : undefined };
           }
           if (demiIndex === 1) {
             const winner = m.winner && (m.winner === D2A || m.winner === D2B) ? m.winner : "";
-            return { ...m, a: D2A, b: D2B, winner, status: winner ? "VALIDATED" : "PENDING" };
+            return { ...m, a: D2A, b: D2B, winner, status: winner ? "VALIDATED" : "PENDING", endedAt: winner ? m.endedAt : undefined };
           }
           return m;
         });
@@ -2628,13 +2732,27 @@ export default function App() {
             const a = w1 && w2 ? w1 : "";
             const b = w1 && w2 ? w2 : "";
             const keepWinner = m.winner && (m.winner === a || m.winner === b) ? m.winner : "";
-            return { ...m, a, b, winner: keepWinner, status: keepWinner ? "VALIDATED" : "PENDING" };
+            return {
+              ...m,
+              a,
+              b,
+              winner: keepWinner,
+              status: keepWinner ? "VALIDATED" : "PENDING",
+              endedAt: keepWinner ? m.endedAt : undefined,
+            };
           }
           if (m.phase === "PFINAL") {
             const a = l1 && l2 ? l1 : "";
             const b = l1 && l2 ? l2 : "";
             const keepWinner = m.winner && (m.winner === a || m.winner === b) ? m.winner : "";
-            return { ...m, a, b, winner: keepWinner, status: keepWinner ? "VALIDATED" : "PENDING" };
+            return {
+              ...m,
+              a,
+              b,
+              winner: keepWinner,
+              status: keepWinner ? "VALIDATED" : "PENDING",
+              endedAt: keepWinner ? m.endedAt : undefined,
+            };
           }
           return m;
         });
@@ -2990,6 +3108,8 @@ export default function App() {
                       const basePts = m.phase === "PFINAL" ? effectiveRules.smallFinalPoints : effectiveRules.winPoints;
                       const ptsA = (winner && winner === m.a ? basePts : 0) + bonusA;
                       const ptsB = (winner && winner === m.b ? basePts : 0) + bonusB;
+                      const matchDurationMs = getMatchDurationMs(m, clockNow);
+                      const matchDurationLabel = m.startedAt ? formatDuration(matchDurationMs) : "—";
                       const pickWinner = (name: string) => {
                         setMatchWinner(m.id, name);
                         if (m.phase === "DEMI") setTimeout(() => recalcFinalAndPFinal(), 0);
@@ -3038,6 +3158,16 @@ export default function App() {
                                   Inverser A/B
                                 </button>
                               </div>
+                              <div className="flex items-center justify-between text-xs text-white/70">
+                                <span>Durée: {matchDurationLabel}</span>
+                                <button
+                                  className="rounded-lg border border-white/15 bg-black/40 px-2 py-1 text-[11px] hover:bg-white/10"
+                                  onClick={() => startMatchTimer(m.id)}
+                                  disabled={!m.a || !m.b || readOnlyMode}
+                                >
+                                  {m.startedAt && !m.endedAt ? "Relancer" : m.startedAt ? "Reprendre" : "Démarrer"}
+                                </button>
+                              </div>
                               <div className="grid grid-cols-1 gap-2">
                                 <Select
                                   value={m.checkoutBy}
@@ -3082,6 +3212,16 @@ export default function App() {
                           </div>
                           <div className="mt-2 text-xs text-white/60">
                             {m.format} • {m.bo} • {m.maxTurns}t
+                          </div>
+                          <div className="mt-1 flex items-center justify-between text-xs text-white/70">
+                            <span>Durée: {matchDurationLabel}</span>
+                            <button
+                              className="rounded-lg border border-white/15 bg-black/40 px-2 py-1 text-[11px] hover:bg-white/10"
+                              onClick={() => startMatchTimer(m.id)}
+                              disabled={!m.a || !m.b || readOnlyMode}
+                            >
+                              {m.startedAt && !m.endedAt ? "Relancer" : m.startedAt ? "Reprendre" : "Démarrer"}
+                            </button>
                           </div>
                           <div className="mt-3 grid grid-cols-1 gap-2">
                             <div className="grid grid-cols-2 gap-2">
@@ -3131,6 +3271,7 @@ export default function App() {
                         <th className="py-2 pr-2">A</th>
                         <th className="py-2 pr-2">B</th>
                         <th className="py-2 pr-2">Vainqueur</th>
+                        <th className="py-2 pr-2">Chrono</th>
                         <th className="py-2 pr-2">Checkout ≥100 par</th>
                         <th className="py-2 pr-2">Points A</th>
                         <th className="py-2 pr-2">Points B</th>
@@ -3147,6 +3288,8 @@ export default function App() {
                           const basePts = m.phase === "PFINAL" ? effectiveRules.smallFinalPoints : effectiveRules.winPoints;
                           const ptsA = (winner && winner === m.a ? basePts : 0) + bonusA;
                           const ptsB = (winner && winner === m.b ? basePts : 0) + bonusB;
+                          const matchDurationMs = getMatchDurationMs(m, clockNow);
+                          const matchDurationLabel = m.startedAt ? formatDuration(matchDurationMs) : "—";
                           const rowClass = `${winner ? "winner-row" : ""} ${
                             liveSchedule.nextMatch?.id === m.id ? "bg-emerald-500/10" : ""
                           }`;
@@ -3186,6 +3329,18 @@ export default function App() {
                                 />
                               </td>
                               <td className="py-2 pr-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs text-white/70 min-w-[52px]">{matchDurationLabel}</span>
+                                  <button
+                                    className="rounded-lg border border-white/15 bg-black/40 px-2 py-1 text-[11px] hover:bg-white/10"
+                                    onClick={() => startMatchTimer(m.id)}
+                                    disabled={!m.a || !m.b || readOnlyMode}
+                                  >
+                                    {m.startedAt && !m.endedAt ? "Relancer" : m.startedAt ? "Reprendre" : "Start"}
+                                  </button>
+                                </div>
+                              </td>
+                              <td className="py-2 pr-2">
                                 <Select
                                   value={m.checkoutBy}
                                   onChange={(v) => setMatchCheckoutBy(m.id, (v as "" | "A" | "B"))}
@@ -3210,6 +3365,38 @@ export default function App() {
             </div>
 
             <div className="space-y-4">
+              <Section title="Chrono soirée">
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-white/70">Durée en cours</span>
+                    <span className="font-bold text-lg">{soireeTiming.startedAt ? formatDuration(soireeTiming.elapsedMs) : "00:00"}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-white/60">
+                    <span>Matchs chronométrés terminés</span>
+                    <span>{soireeTiming.completedCount}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-white/60">
+                    <span>Durée moyenne / match</span>
+                    <span>{soireeTiming.avgMatchMs > 0 ? formatDuration(soireeTiming.avgMatchMs) : "—"}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-white/60">
+                    <span>Match le plus long</span>
+                    <span>{soireeTiming.longestMatchMs > 0 ? formatDuration(soireeTiming.longestMatchMs) : "—"}</span>
+                  </div>
+                  <div className="pt-1 flex flex-wrap gap-2">
+                    <Button variant="ghost" onClick={() => startSoireeTimer()} disabled={readOnlyMode}>
+                      {soireeTiming.startedAt ? "Reprendre" : "Démarrer soirée"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => stopSoireeTimer()}
+                      disabled={readOnlyMode || !soireeTiming.startedAt || Boolean(soireeTiming.endedAt)}
+                    >
+                      Stop soirée
+                    </Button>
+                  </div>
+                </div>
+              </Section>
 
               <Section
                 title="Classement des poules"
