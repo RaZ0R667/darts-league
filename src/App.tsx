@@ -3210,95 +3210,6 @@ export default function App() {
             </div>
 
             <div className="space-y-4">
-              <Section title="Présences & ordre live">
-                <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
-                  <Pill color="#22c55e">Présents: {soireePlayers.filter((p) => soireeAttendance.get(p) === "HERE").length}</Pill>
-                  <Pill color="#f59e0b">Retard: {liveSchedule.latePlayers.length}</Pill>
-                  <Pill color="#ef4444">Absents: {liveSchedule.absentPlayers.length}</Pill>
-                </div>
-
-                <div className="space-y-2">
-                  {soireePlayers.map((p) => {
-                    const status = soireeAttendance.get(p) ?? "HERE";
-                    const eta = currentSoiree.arrivalEta?.[p] ?? "";
-                    return (
-                      <div key={p} className="rounded-xl border border-white/10 bg-black/25 p-2">
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                          <div className="flex items-center gap-2">
-                            <span className="h-2.5 w-2.5 rounded-full" style={{ background: getPlayerColor(p) }} />
-                            <span className="font-semibold text-sm">{p}</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <select
-                              className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-white"
-                              value={status}
-                              disabled={readOnlyMode}
-                              onChange={(e) => setSoireePlayerPresence(p, e.target.value as PresenceStatus)}
-                            >
-                              <option value="HERE">Présent</option>
-                              <option value="LATE">Arrive plus tard</option>
-                              <option value="ABSENT">Absent</option>
-                            </select>
-                            {status === "LATE" && (
-                              <input
-                                type="time"
-                                className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-white"
-                                value={eta}
-                                disabled={readOnlyMode}
-                                onChange={(e) => setSoireePlayerEta(p, e.target.value)}
-                              />
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Button variant="ghost" onClick={() => setAllSoireePlayersPresent()} disabled={readOnlyMode}>
-                    Tout le monde présent
-                  </Button>
-                </div>
-
-                <div className="mt-3 rounded-xl border border-emerald-400/25 bg-emerald-500/10 p-3 text-sm">
-                  <div className="font-semibold text-emerald-200">Prochain match recommandé</div>
-                  {liveSchedule.nextMatch ? (
-                    <>
-                      <div className="mt-1">
-                        #{liveSchedule.nextMatch.order} — {liveSchedule.nextMatch.a} vs {liveSchedule.nextMatch.b}
-                        {liveSchedule.nextMatch.pool ? ` (Poule ${liveSchedule.nextMatch.pool})` : ""}
-                      </div>
-                      <div className="mt-1 text-xs text-emerald-100/90">{liveSchedule.nextReason}</div>
-                    </>
-                  ) : (
-                    <div className="mt-1 text-xs text-emerald-100/90">
-                      {liveSchedule.remainingCount === 0
-                        ? "Tous les matchs sont déjà joués."
-                        : liveSchedule.playableCount === 0
-                          ? "Aucun match jouable pour l’instant (attente d’arrivées)."
-                          : "Aucune recommandation disponible."}
-                    </div>
-                  )}
-                </div>
-
-                {liveSchedule.candidates.length > 1 && (
-                  <div className="mt-3 rounded-xl border border-white/10 bg-black/30 p-3">
-                    <div className="text-xs text-white/60">Ordre conseillé (top 5)</div>
-                    <div className="mt-2 space-y-1 text-xs">
-                      {liveSchedule.candidates.slice(0, 5).map((c, idx: number) => (
-                        <div key={c.match.id} className="flex items-center justify-between gap-2 rounded-lg bg-black/20 px-2 py-1">
-                          <span className="text-white/70">{idx + 1}.</span>
-                          <span className="flex-1">
-                            #{c.match.order} {c.match.a} vs {c.match.b}
-                          </span>
-                          <span className="text-white/50">{c.match.pool ? `Poule ${c.match.pool}` : c.match.phase}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </Section>
 
               <Section
                 title="Classement des poules"
@@ -3475,6 +3386,96 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+              </Section>
+
+              <Section title="Présences & ordre live">
+                <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+                  <Pill color="#22c55e">Présents: {soireePlayers.filter((p) => soireeAttendance.get(p) === "HERE").length}</Pill>
+                  <Pill color="#f59e0b">Retard: {liveSchedule.latePlayers.length}</Pill>
+                  <Pill color="#ef4444">Absents: {liveSchedule.absentPlayers.length}</Pill>
+                </div>
+
+                <div className="space-y-2">
+                  {soireePlayers.map((p) => {
+                    const status = soireeAttendance.get(p) ?? "HERE";
+                    const eta = currentSoiree.arrivalEta?.[p] ?? "";
+                    return (
+                      <div key={p} className="rounded-xl border border-white/10 bg-black/25 p-2">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="h-2.5 w-2.5 rounded-full" style={{ background: getPlayerColor(p) }} />
+                            <span className="font-semibold text-sm">{p}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <select
+                              className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-white"
+                              value={status}
+                              disabled={readOnlyMode}
+                              onChange={(e) => setSoireePlayerPresence(p, e.target.value as PresenceStatus)}
+                            >
+                              <option value="HERE">Présent</option>
+                              <option value="LATE">Arrive plus tard</option>
+                              <option value="ABSENT">Absent</option>
+                            </select>
+                            {status === "LATE" && (
+                              <input
+                                type="time"
+                                className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-white"
+                                value={eta}
+                                disabled={readOnlyMode}
+                                onChange={(e) => setSoireePlayerEta(p, e.target.value)}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button variant="ghost" onClick={() => setAllSoireePlayersPresent()} disabled={readOnlyMode}>
+                    Tout le monde présent
+                  </Button>
+                </div>
+
+                <div className="mt-3 rounded-xl border border-emerald-400/25 bg-emerald-500/10 p-3 text-sm">
+                  <div className="font-semibold text-emerald-200">Prochain match recommandé</div>
+                  {liveSchedule.nextMatch ? (
+                    <>
+                      <div className="mt-1">
+                        #{liveSchedule.nextMatch.order} — {liveSchedule.nextMatch.a} vs {liveSchedule.nextMatch.b}
+                        {liveSchedule.nextMatch.pool ? ` (Poule ${liveSchedule.nextMatch.pool})` : ""}
+                      </div>
+                      <div className="mt-1 text-xs text-emerald-100/90">{liveSchedule.nextReason}</div>
+                    </>
+                  ) : (
+                    <div className="mt-1 text-xs text-emerald-100/90">
+                      {liveSchedule.remainingCount === 0
+                        ? "Tous les matchs sont déjà joués."
+                        : liveSchedule.playableCount === 0
+                          ? "Aucun match jouable pour l’instant (attente d’arrivées)."
+                          : "Aucune recommandation disponible."}
+                    </div>
+                  )}
+                </div>
+
+                {liveSchedule.candidates.length > 1 && (
+                  <div className="mt-3 rounded-xl border border-white/10 bg-black/30 p-3">
+                    <div className="text-xs text-white/60">Ordre conseillé (top 5)</div>
+                    <div className="mt-2 space-y-1 text-xs">
+                      {liveSchedule.candidates.slice(0, 5).map((c, idx: number) => (
+                        <div key={c.match.id} className="flex items-center justify-between gap-2 rounded-lg bg-black/20 px-2 py-1">
+                          <span className="text-white/70">{idx + 1}.</span>
+                          <span className="flex-1">
+                            #{c.match.order} {c.match.a} vs {c.match.b}
+                          </span>
+                          <span className="text-white/50">{c.match.pool ? `Poule ${c.match.pool}` : c.match.phase}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </Section>
             </div>
           </div>
