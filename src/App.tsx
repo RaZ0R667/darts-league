@@ -15,6 +15,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 type Phase = "POULE" | "DEMI" | "PFINAL" | "FINAL";
 type MatchStatus = "PENDING" | "VALIDATED" | "CONTESTED";
 type RulesProfile = "STANDARD" | "FUN" | "CUSTOM";
+type PresenceStatus = "HERE" | "LATE" | "ABSENT";
 type AppTab =
   | "SOIREE"
   | "CLASSEMENT"
@@ -82,6 +83,8 @@ type Soiree = {
   matches: CoreMatch[];
   rebuys: RebuyMatch[];
   absentPlayers?: string[];
+  attendance?: Record<string, PresenceStatus>;
+  arrivalEta?: Record<string, string>;
   payments?: Record<string, boolean>;
   financeNotes?: string;
   qualifiersOverride?: {
@@ -830,6 +833,24 @@ function sanitizeState(raw: any): AppState {
         for (const p of poolsA.concat(poolsB)) {
           payments[p] = Boolean(paymentsRaw[p]);
         }
+        const attendanceRaw = s?.attendance && typeof s.attendance === "object" ? s.attendance : {};
+        const arrivalEtaRaw = s?.arrivalEta && typeof s.arrivalEta === "object" ? s.arrivalEta : {};
+        const absentsSet = new Set(
+          (Array.isArray(s?.absentPlayers) ? s.absentPlayers : []).map(normName).filter(isNonEmptyString)
+        );
+        const attendance: Record<string, PresenceStatus> = {};
+        const arrivalEta: Record<string, string> = {};
+        for (const p of poolsA.concat(poolsB)) {
+          const rawStatus = attendanceRaw[p];
+          if (rawStatus === "LATE" || rawStatus === "ABSENT" || rawStatus === "HERE") {
+            attendance[p] = rawStatus;
+          } else {
+            attendance[p] = absentsSet.has(p) ? "ABSENT" : "HERE";
+          }
+          const eta = normName(arrivalEtaRaw[p]);
+          if (attendance[p] === "LATE" && eta) arrivalEta[p] = eta;
+        }
+        const absentPlayers = Object.keys(attendance).filter((p) => attendance[p] === "ABSENT");
 
         return {
           id: normName(s?.id) || uid("s"),
@@ -839,7 +860,9 @@ function sanitizeState(raw: any): AppState {
           pools: { A: poolsA, B: poolsB },
           matches: matches.sort((a: CoreMatch, b: CoreMatch) => a.order - b.order),
           rebuys: rebuys.sort((a: RebuyMatch, b: RebuyMatch) => a.createdAt - b.createdAt),
-          absentPlayers: Array.isArray(s?.absentPlayers) ? s.absentPlayers.map(normName).filter(isNonEmptyString) : [],
+          absentPlayers,
+          attendance,
+          arrivalEta,
           payments,
           financeNotes: normName(s?.financeNotes) || "",
           qualifiersOverride:
@@ -1366,6 +1389,129 @@ export default function App() {
     return currentSeason.soirees.find((s: Soiree) => s.number === selectedSoireeNumber) ?? currentSeason.soirees[0];
   }, [currentSeason.soirees, selectedSoireeNumber]);
   const fairSoireeMode = useMemo(() => isFairSoireeMode(currentSoiree), [currentSoiree]);
+
+  const soireePlayers = useMemo(() => {
+    return uniq([...currentSoiree.pools.A, ...currentSoiree.pools.B].map(normName)).filter(isNonEmptyString);
+  }, [currentSoiree.pools.A, currentSoiree.pools.B]);
+
+  const soireeAttendance = useMemo(() => {
+    const map = new Map<string, PresenceStatus>();
+    const absentsSet = new Set((currentSoiree.absentPlayers ?? []).map(normName).filter(isNonEmptyString));
+    const attendanceRaw = currentSoiree.attendance ?? {};
+    for (const p of soireePlayers) {
+      const raw = attendanceRaw[p];
+      if (raw === "HERE" || raw === "LATE" || raw === "ABSENT") {
+        map.set(p, raw);
+      } else {
+        map.set(p, absentsSet.has(p) ? "ABSENT" : "HERE");
+      }
+    }
+    return map;
+  }, [currentSoiree.absentPlayers, currentSoiree.attendance, soireePlayers]);
+
+  const liveSchedule = useMemo(() => {
+    const matches = currentSoiree.matches.slice().sort((a: CoreMatch, b: CoreMatch) => a.order - b.order);
+    const completed = matches.filter((m: CoreMatch) => Boolean(normName(m.winner)));
+    const remaining = matches.filter((m: CoreMatch) => !normName(m.winner) && normName(m.a) && normName(m.b));
+    const playable = remaining.filter(
+      (m: CoreMatch) => soireeAttendance.get(m.a) === "HERE" && soireeAttendance.get(m.b) === "HERE"
+    );
+
+    const playedCount = new Map<string, number>();
+    const lastPlayedIndex = new Map<string, number>();
+    for (const p of soireePlayers) {
+      playedCount.set(p, 0);
+      lastPlayedIndex.set(p, -1);
+    }
+    completed.forEach((m: CoreMatch, idx: number) => {
+      if (m.a) {
+        playedCount.set(m.a, (playedCount.get(m.a) ?? 0) + 1);
+        lastPlayedIndex.set(m.a, idx);
+      }
+      if (m.b) {
+        playedCount.set(m.b, (playedCount.get(m.b) ?? 0) + 1);
+        lastPlayedIndex.set(m.b, idx);
+      }
+    });
+
+    const streakAtEnd = (player: string) => {
+      let streak = 0;
+      for (let i = completed.length - 1; i >= 0; i--) {
+        const m = completed[i];
+        if (m.a === player || m.b === player) streak += 1;
+        else break;
+      }
+      return streak;
+    };
+
+    const lastMatch = completed.length > 0 ? completed[completed.length - 1] : null;
+    const lastPlayers = new Set<string>();
+    if (lastMatch?.a) lastPlayers.add(lastMatch.a);
+    if (lastMatch?.b) lastPlayers.add(lastMatch.b);
+    const hasAlternativeWithoutLastPlayers = playable.some(
+      (m: CoreMatch) => !lastPlayers.has(m.a) && !lastPlayers.has(m.b)
+    );
+    const lastPool = lastMatch?.pool ?? null;
+
+    const candidates = playable
+      .map((m: CoreMatch) => {
+        const waitA = completed.length - (lastPlayedIndex.get(m.a) ?? -1);
+        const waitB = completed.length - (lastPlayedIndex.get(m.b) ?? -1);
+        const playedA = playedCount.get(m.a) ?? 0;
+        const playedB = playedCount.get(m.b) ?? 0;
+        const streakA = streakAtEnd(m.a);
+        const streakB = streakAtEnd(m.b);
+        const reasons: string[] = [];
+        let score = waitA * 110 + waitB * 110;
+
+        if (hasAlternativeWithoutLastPlayers && (lastPlayers.has(m.a) || lastPlayers.has(m.b))) {
+          score -= 2000;
+        } else if (lastPlayers.has(m.a) || lastPlayers.has(m.b)) {
+          reasons.push("peu d'alternatives: enchaînement partiel inévitable");
+        }
+
+        const maxStreak = Math.max(streakA, streakB);
+        const hasAlternativeWithoutStreak = playable.some((x: CoreMatch) => {
+          if (streakA >= 2 && (x.a === m.a || x.b === m.a)) return false;
+          if (streakB >= 2 && (x.a === m.b || x.b === m.b)) return false;
+          return true;
+        });
+        if (maxStreak >= 2 && hasAlternativeWithoutStreak) {
+          score -= 2500;
+        } else if (maxStreak >= 2) {
+          reasons.push("enchaînement toléré faute d'autre match possible");
+        }
+
+        if (lastPool && m.pool && m.pool !== lastPool) {
+          score += 80;
+          reasons.push("alternance des poules");
+        }
+
+        score -= Math.max(playedA, playedB) * 18;
+        score -= Math.abs(playedA - playedB) * 25;
+        score -= m.order * 0.1;
+
+        const maxWait = Math.max(waitA, waitB);
+        if (maxWait >= 3) reasons.push("priorité aux joueurs qui attendent le plus");
+        if (reasons.length === 0) reasons.push("équilibre global des rotations");
+
+        return { match: m, score, reasons };
+      })
+      .sort((x, y) => y.score - x.score);
+
+    const next = candidates[0];
+    const latePlayers = soireePlayers.filter((p) => soireeAttendance.get(p) === "LATE");
+    const absentPlayers = soireePlayers.filter((p) => soireeAttendance.get(p) === "ABSENT");
+    return {
+      candidates,
+      nextMatch: next?.match,
+      nextReason: next?.reasons?.join(" • ") ?? "",
+      remainingCount: remaining.length,
+      playableCount: playable.length,
+      latePlayers,
+      absentPlayers,
+    };
+  }, [currentSoiree.matches, soireeAttendance, soireePlayers]);
 
 
   const currentPoolStandings = useMemo(() => {
@@ -2144,6 +2290,59 @@ export default function App() {
     setAbsentPlayersSelection((prev) => (prev.includes(name) ? prev.filter((x) => x !== name) : [...prev, name]));
   }
 
+  function setSoireePlayerPresence(player: string, status: PresenceStatus) {
+    updateSeason((season) => {
+      const soirees = season.soirees.map((s: Soiree) => {
+        if (s.number !== currentSoiree.number) return s;
+        const attendance: Record<string, PresenceStatus> = { ...(s.attendance ?? {}) };
+        const arrivalEta: Record<string, string> = { ...(s.arrivalEta ?? {}) };
+        attendance[player] = status;
+        if (status !== "LATE") delete arrivalEta[player];
+        const absentSet = new Set((s.absentPlayers ?? []).map(normName).filter(isNonEmptyString));
+        if (status === "ABSENT") absentSet.add(player);
+        else absentSet.delete(player);
+        return {
+          ...s,
+          attendance,
+          arrivalEta,
+          absentPlayers: [...absentSet].sort((a: string, b: string) => a.localeCompare(b)),
+        };
+      });
+      return { ...season, soirees };
+    });
+  }
+
+  function setSoireePlayerEta(player: string, eta: string) {
+    updateSeason((season) => {
+      const soirees = season.soirees.map((s: Soiree) => {
+        if (s.number !== currentSoiree.number) return s;
+        const attendance: Record<string, PresenceStatus> = { ...(s.attendance ?? {}) };
+        const arrivalEta: Record<string, string> = { ...(s.arrivalEta ?? {}) };
+        attendance[player] = "LATE";
+        arrivalEta[player] = eta;
+        const absentSet = new Set((s.absentPlayers ?? []).map(normName).filter(isNonEmptyString));
+        absentSet.delete(player);
+        return { ...s, attendance, arrivalEta, absentPlayers: [...absentSet] };
+      });
+      return { ...season, soirees };
+    });
+  }
+
+  function setAllSoireePlayersPresent() {
+    updateSeason((season) => {
+      const soirees = season.soirees.map((s: Soiree) => {
+        if (s.number !== currentSoiree.number) return s;
+        const players = uniq([...s.pools.A, ...s.pools.B].map(normName)).filter(isNonEmptyString);
+        const attendance = players.reduce((acc, p) => {
+          acc[p] = "HERE";
+          return acc;
+        }, {} as Record<string, PresenceStatus>);
+        return { ...s, attendance, arrivalEta: {}, absentPlayers: [] };
+      });
+      return { ...season, soirees };
+    });
+  }
+
   function startNewSoiree(absentPlayers: string[] = []) {
     const absents = absentPlayers.map(normName).filter(isNonEmptyString);
     const presentPlayers = currentSeason.players.filter((p) => !absents.includes(p));
@@ -2260,6 +2459,11 @@ export default function App() {
         number: nextNumber,
         createdAt: Date.now(),
         absentPlayers: absents,
+        attendance: players.concat(absents).reduce((acc, p) => {
+          acc[p] = absents.includes(p) ? "ABSENT" : "HERE";
+          return acc;
+        }, {} as Record<string, PresenceStatus>),
+        arrivalEta: {},
         pools,
         matches: [...inter, ...finals],
         rebuys: [],
@@ -2790,7 +2994,9 @@ export default function App() {
                         setMatchWinner(m.id, name);
                         if (m.phase === "DEMI") setTimeout(() => recalcFinalAndPFinal(), 0);
                       };
-                      const cardClass = winner ? "winner-anim" : "";
+                      const cardClass = `${winner ? "winner-anim" : ""} ${
+                        liveSchedule.nextMatch?.id === m.id ? "ring-1 ring-emerald-400/60" : ""
+                      }`;
 
                       if (compactMode) {
                         return (
@@ -2941,7 +3147,9 @@ export default function App() {
                           const basePts = m.phase === "PFINAL" ? effectiveRules.smallFinalPoints : effectiveRules.winPoints;
                           const ptsA = (winner && winner === m.a ? basePts : 0) + bonusA;
                           const ptsB = (winner && winner === m.b ? basePts : 0) + bonusB;
-                          const rowClass = winner ? "winner-row" : "";
+                          const rowClass = `${winner ? "winner-row" : ""} ${
+                            liveSchedule.nextMatch?.id === m.id ? "bg-emerald-500/10" : ""
+                          }`;
 
                           return (
                             <tr key={m.id} className={`border-t border-white/10 ${rowClass}`}>
@@ -3002,6 +3210,96 @@ export default function App() {
             </div>
 
             <div className="space-y-4">
+              <Section title="Présences & ordre live">
+                <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+                  <Pill color="#22c55e">Présents: {soireePlayers.filter((p) => soireeAttendance.get(p) === "HERE").length}</Pill>
+                  <Pill color="#f59e0b">Retard: {liveSchedule.latePlayers.length}</Pill>
+                  <Pill color="#ef4444">Absents: {liveSchedule.absentPlayers.length}</Pill>
+                </div>
+
+                <div className="space-y-2">
+                  {soireePlayers.map((p) => {
+                    const status = soireeAttendance.get(p) ?? "HERE";
+                    const eta = currentSoiree.arrivalEta?.[p] ?? "";
+                    return (
+                      <div key={p} className="rounded-xl border border-white/10 bg-black/25 p-2">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="h-2.5 w-2.5 rounded-full" style={{ background: getPlayerColor(p) }} />
+                            <span className="font-semibold text-sm">{p}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <select
+                              className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-white"
+                              value={status}
+                              disabled={readOnlyMode}
+                              onChange={(e) => setSoireePlayerPresence(p, e.target.value as PresenceStatus)}
+                            >
+                              <option value="HERE">Présent</option>
+                              <option value="LATE">Arrive plus tard</option>
+                              <option value="ABSENT">Absent</option>
+                            </select>
+                            {status === "LATE" && (
+                              <input
+                                type="time"
+                                className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-white"
+                                value={eta}
+                                disabled={readOnlyMode}
+                                onChange={(e) => setSoireePlayerEta(p, e.target.value)}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button variant="ghost" onClick={() => setAllSoireePlayersPresent()} disabled={readOnlyMode}>
+                    Tout le monde présent
+                  </Button>
+                </div>
+
+                <div className="mt-3 rounded-xl border border-emerald-400/25 bg-emerald-500/10 p-3 text-sm">
+                  <div className="font-semibold text-emerald-200">Prochain match recommandé</div>
+                  {liveSchedule.nextMatch ? (
+                    <>
+                      <div className="mt-1">
+                        #{liveSchedule.nextMatch.order} — {liveSchedule.nextMatch.a} vs {liveSchedule.nextMatch.b}
+                        {liveSchedule.nextMatch.pool ? ` (Poule ${liveSchedule.nextMatch.pool})` : ""}
+                      </div>
+                      <div className="mt-1 text-xs text-emerald-100/90">{liveSchedule.nextReason}</div>
+                    </>
+                  ) : (
+                    <div className="mt-1 text-xs text-emerald-100/90">
+                      {liveSchedule.remainingCount === 0
+                        ? "Tous les matchs sont déjà joués."
+                        : liveSchedule.playableCount === 0
+                          ? "Aucun match jouable pour l’instant (attente d’arrivées)."
+                          : "Aucune recommandation disponible."}
+                    </div>
+                  )}
+                </div>
+
+                {liveSchedule.candidates.length > 1 && (
+                  <div className="mt-3 rounded-xl border border-white/10 bg-black/30 p-3">
+                    <div className="text-xs text-white/60">Ordre conseillé (top 5)</div>
+                    <div className="mt-2 space-y-1 text-xs">
+                      {liveSchedule.candidates.slice(0, 5).map((c, idx: number) => (
+                        <div key={c.match.id} className="flex items-center justify-between gap-2 rounded-lg bg-black/20 px-2 py-1">
+                          <span className="text-white/70">{idx + 1}.</span>
+                          <span className="flex-1">
+                            #{c.match.order} {c.match.a} vs {c.match.b}
+                          </span>
+                          <span className="text-white/50">{c.match.pool ? `Poule ${c.match.pool}` : c.match.phase}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </Section>
+
               <Section
                 title="Classement des poules"
                 right={fairSoireeMode ? <Pill color="#eab308">Mode équité: moyenne / match</Pill> : undefined}
