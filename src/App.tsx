@@ -83,6 +83,8 @@ type Soiree = {
   createdAt: number;
   startedAt?: number;
   endedAt?: number;
+  closedAt?: number;
+  locked?: boolean;
   pools: { A: string[]; B: string[] };
   matches: CoreMatch[];
   rebuys: RebuyMatch[];
@@ -865,6 +867,8 @@ function sanitizeState(raw: any): AppState {
           createdAt: Number(s?.createdAt ?? Date.now()),
           startedAt: Number.isFinite(Number(s?.startedAt)) ? Number(s.startedAt) : undefined,
           endedAt: Number.isFinite(Number(s?.endedAt)) ? Number(s.endedAt) : undefined,
+          closedAt: Number.isFinite(Number(s?.closedAt)) ? Number(s.closedAt) : undefined,
+          locked: Boolean(s?.locked),
           pools: { A: poolsA, B: poolsB },
           matches: matches.sort((a: CoreMatch, b: CoreMatch) => a.order - b.order),
           rebuys: rebuys.sort((a: RebuyMatch, b: RebuyMatch) => a.createdAt - b.createdAt),
@@ -1077,6 +1081,18 @@ function getMatchDurationMs(match: CoreMatch, now: number) {
   return Math.max(0, end - match.startedAt);
 }
 
+function getSoireeDurationMs(soiree: Soiree, now: number) {
+  const startedAt =
+    soiree.startedAt ??
+    soiree.matches
+      .map((m: CoreMatch) => m.startedAt)
+      .filter((x): x is number => typeof x === "number" && Number.isFinite(x))
+      .sort((a: number, b: number) => a - b)[0];
+  if (!startedAt) return 0;
+  const end = soiree.endedAt ?? now;
+  return Math.max(0, end - startedAt);
+}
+
 function parseEtaTodayMs(hhmm: string, nowMs: number) {
   const v = normName(hhmm);
   const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(v);
@@ -1236,6 +1252,8 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState<string>("");
   const [readOnlyMode, setReadOnlyMode] = useState(false);
   const [readOnlyRoomCode, setReadOnlyRoomCode] = useState("");
+  const [showSoireeClosureModal, setShowSoireeClosureModal] = useState(false);
+  const [closureSoireeId, setClosureSoireeId] = useState("");
   const [newPlayerName, setNewPlayerName] = useState("");
   const [bulkPlayersText, setBulkPlayersText] = useState("");
   const [editingPlayer, setEditingPlayer] = useState<string | null>(null);
@@ -1408,6 +1426,30 @@ export default function App() {
     }
   }, [currentSeason.soirees, selectedSoireeNumber]);
 
+  useEffect(() => {
+    if (readOnlyMode) return;
+    if (!currentSoiree || currentSoiree.matches.length === 0) return;
+    const latestNumber = Math.max(...currentSeason.soirees.map((s: Soiree) => s.number));
+    if (currentSoiree.number !== latestNumber) return;
+    const allDone = currentSoiree.matches.every((m: CoreMatch) => Boolean(normName(m.winner)));
+    if (!allDone || currentSoiree.closedAt) return;
+
+    const now = Date.now();
+    updateSeason((season) => {
+      const soirees = season.soirees.map((s: Soiree) => {
+        if (s.id !== currentSoiree.id) return s;
+        if (s.closedAt) return s;
+        return { ...s, closedAt: now, endedAt: s.endedAt ?? now };
+      });
+      return { ...season, soirees };
+    });
+    createSnapshot(`Fin Soirée ${currentSoiree.number}`);
+    setClosureSoireeId(currentSoiree.id);
+    setShowSoireeClosureModal(true);
+    logAudit("Fin de soirée détectée", `Soirée ${currentSoiree.number}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSoiree.id, currentSoiree.matches, currentSoiree.closedAt, currentSoiree.number, currentSeason.soirees, readOnlyMode]);
+
   const effectiveRules = useMemo(
     () => getRules(state.system.rulesProfile, state.system.customRules),
     [state.system.rulesProfile, state.system.customRules]
@@ -1434,6 +1476,15 @@ export default function App() {
   const currentSoiree = useMemo(() => {
     return currentSeason.soirees.find((s: Soiree) => s.number === selectedSoireeNumber) ?? currentSeason.soirees[0];
   }, [currentSeason.soirees, selectedSoireeNumber]);
+  const closureSoiree = useMemo(() => {
+    if (!closureSoireeId) return null;
+    for (const season of state.seasons) {
+      const found = season.soirees.find((s: Soiree) => s.id === closureSoireeId);
+      if (found) return found;
+    }
+    return null;
+  }, [state.seasons, closureSoireeId]);
+  const currentSoireeLocked = Boolean(currentSoiree?.locked);
   const fairSoireeMode = useMemo(() => isFairSoireeMode(currentSoiree), [currentSoiree]);
 
   const soireePlayers = useMemo(() => {
@@ -1885,6 +1936,68 @@ export default function App() {
     logAudit("Export résumé PDF");
   }
 
+  function buildSoireeSummaryText(soiree: Soiree) {
+    const { pts, wins } = computePointsFromMatches(soiree.matches, soiree.rebuys, soiree.number, currentSeason, effectiveRules);
+    const ranking = uniq([...soiree.pools.A, ...soiree.pools.B].map(normName))
+      .filter(isNonEmptyString)
+      .map((p: string) => ({ name: p, pts: pts.get(p) ?? 0, wins: wins.get(p) ?? 0 }))
+      .sort((a, b) => b.pts - a.pts || b.wins - a.wins || a.name.localeCompare(b.name));
+    const durationMs = getSoireeDurationMs(soiree, Date.now());
+    const lines: string[] = [];
+    lines.push(`Résumé Soirée ${soiree.number} - ${currentSeason.name}`);
+    lines.push(`Date: ${new Date().toLocaleString("fr-FR")}`);
+    lines.push(`Durée: ${durationMs > 0 ? formatDuration(durationMs) : "n/a"}`);
+    lines.push(`Matchs joués: ${soiree.matches.filter((m: CoreMatch) => Boolean(normName(m.winner))).length}/${soiree.matches.length}`);
+    lines.push(`Re-buys: ${soiree.rebuys.length}`);
+    lines.push("");
+    lines.push("Classement soirée:");
+    ranking.forEach((r, i) => lines.push(`${i + 1}. ${r.name} - ${r.pts} pts (${r.wins} V)`));
+    return lines.join("\n");
+  }
+
+  function exportSoireeSummaryText(soiree: Soiree) {
+    const text = buildSoireeSummaryText(soiree);
+    downloadTextFile(`resume_soiree_${soiree.number}.txt`, text, "text/plain;charset=utf-8");
+    logAudit("Export résumé soirée", `S${soiree.number}`);
+  }
+
+  function exportSoireeSummaryPDF(soiree: Soiree) {
+    const { pts, wins } = computePointsFromMatches(soiree.matches, soiree.rebuys, soiree.number, currentSeason, effectiveRules);
+    const ranking = uniq([...soiree.pools.A, ...soiree.pools.B].map(normName))
+      .filter(isNonEmptyString)
+      .map((p: string) => ({ name: p, pts: pts.get(p) ?? 0, wins: wins.get(p) ?? 0 }))
+      .sort((a, b) => b.pts - a.pts || b.wins - a.wins || a.name.localeCompare(b.name));
+    const rows = ranking
+      .map((r, i) => `<tr><td>${i + 1}</td><td>${r.name}</td><td>${r.pts}</td><td>${r.wins}</td></tr>`)
+      .join("");
+    const durationMs = getSoireeDurationMs(soiree, Date.now());
+    const html = `<!doctype html><html><head><meta charset="utf-8"/><title>Résumé Soirée ${soiree.number}</title>
+    <style>body{font-family:-apple-system,Segoe UI,Arial,sans-serif;padding:24px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px;text-align:left}</style>
+    </head><body><h1>Résumé Soirée ${soiree.number}</h1><p>Saison: ${currentSeason.name}</p><p>Date: ${new Date().toLocaleString("fr-FR")}</p>
+    <p>Durée: ${durationMs > 0 ? formatDuration(durationMs) : "n/a"} • Re-buys: ${soiree.rebuys.length}</p>
+    <table><thead><tr><th>#</th><th>Joueur</th><th>Points</th><th>Victoires</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+    const w = window.open("", "_blank");
+    if (!w) return;
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    w.print();
+    logAudit("Export résumé soirée PDF", `S${soiree.number}`);
+  }
+
+  function setSoireeLockedById(soireeId: string, locked: boolean) {
+    updateSeason((season) => {
+      const soirees = season.soirees.map((s: Soiree) => (s.id === soireeId ? { ...s, locked } : s));
+      return { ...season, soirees };
+    });
+    const so = currentSeason.soirees.find((s: Soiree) => s.id === soireeId);
+    logAudit(locked ? "Soirée verrouillée" : "Soirée déverrouillée", so ? `S${so.number}` : soireeId);
+  }
+
+  function setCurrentSoireeLocked(locked: boolean) {
+    setSoireeLockedById(currentSoiree.id, locked);
+  }
+
   async function generateReadOnlyLink() {
     const code = normName(syncCode).toUpperCase();
     let url = "";
@@ -2308,6 +2421,7 @@ export default function App() {
   }
 
   function setQualifiersOverride(patch: Partial<NonNullable<Soiree["qualifiersOverride"]>>) {
+    if (currentSoireeLocked) return;
     updateSeason((season) => {
       const soirees = season.soirees.map((s) => {
         if (s.number !== currentSoiree.number) return s;
@@ -2434,6 +2548,7 @@ export default function App() {
   }
 
   function setSoireePlayerPresence(player: string, status: PresenceStatus) {
+    if (currentSoireeLocked) return;
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -2456,6 +2571,7 @@ export default function App() {
   }
 
   function setSoireePlayerEta(player: string, eta: string) {
+    if (currentSoireeLocked) return;
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -2472,6 +2588,7 @@ export default function App() {
   }
 
   function setAllSoireePlayersPresent() {
+    if (currentSoireeLocked) return;
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -2487,6 +2604,7 @@ export default function App() {
   }
 
   function startSoireeTimer() {
+    if (currentSoireeLocked) return;
     const now = Date.now();
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
@@ -2498,6 +2616,7 @@ export default function App() {
   }
 
   function stopSoireeTimer() {
+    if (currentSoireeLocked) return;
     const now = Date.now();
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
@@ -2510,6 +2629,7 @@ export default function App() {
   }
 
   function startMatchTimer(matchId: string) {
+    if (currentSoireeLocked) return;
     const now = Date.now();
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
@@ -2669,6 +2789,7 @@ export default function App() {
   }
 
   function setMatchWinner(matchId: string, winner: string) {
+    if (currentSoireeLocked) return;
     const now = Date.now();
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
@@ -2700,6 +2821,7 @@ export default function App() {
   }
 
   function setMatchStatus(matchId: string, status: MatchStatus) {
+    if (currentSoireeLocked) return;
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -2712,6 +2834,7 @@ export default function App() {
   }
 
   function setMatchCheckoutBy(matchId: string, checkoutBy: "" | "A" | "B") {
+    if (currentSoireeLocked) return;
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -2728,6 +2851,7 @@ export default function App() {
   }
 
   function swapMatchPlayers(matchId: string) {
+    if (currentSoireeLocked) return;
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -2746,6 +2870,7 @@ export default function App() {
   }
 
   function recalcFinalsFromPools() {
+    if (currentSoireeLocked) return;
     const A = computePoolRows(currentSoiree, "A", currentSeason, effectiveRules);
     const B = computePoolRows(currentSoiree, "B", currentSeason, effectiveRules);
     const fairMode = isFairSoireeMode(currentSoiree);
@@ -2797,6 +2922,7 @@ export default function App() {
   }
 
   function recalcFinalAndPFinal() {
+    if (currentSoireeLocked) return;
     const demis = currentSoiree.matches
       .filter((m: CoreMatch) => m.phase === "DEMI")
       .sort((a: CoreMatch, b: CoreMatch) => a.order - b.order);
@@ -2849,6 +2975,7 @@ export default function App() {
   }
 
   function addRebuy() {
+    if (currentSoireeLocked) return;
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -2867,6 +2994,7 @@ export default function App() {
   }
 
   function updateRebuy(id: string, patch: Partial<RebuyMatch>) {
+    if (currentSoireeLocked) return;
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -2878,6 +3006,7 @@ export default function App() {
   }
 
   function deleteRebuy(id: string) {
+    if (currentSoireeLocked) return;
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -3254,15 +3383,20 @@ export default function App() {
         <div className={`tv-stage ${tvMode ? "tv-animate" : ""}`} key={tvMode ? tab : "static"}>
         {tab === "SOIREE" && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            {currentSoireeLocked && (
+              <div className="lg:col-span-3 rounded-2xl border border-yellow-400/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-200">
+                Soirée verrouillée: les résultats/matchs sont figés. Tu peux la déverrouiller depuis la popup de fin de soirée.
+              </div>
+            )}
             <div className="lg:col-span-2">
               <Section
                 title={`Planning — Soirée ${currentSoiree.number}`}
                 right={
                   <div className="flex flex-wrap gap-2">
-                    <Button variant="ghost" onClick={() => recalcFinalsFromPools()}>
+                    <Button variant="ghost" onClick={() => recalcFinalsFromPools()} disabled={currentSoireeLocked || readOnlyMode}>
                       Calculer demis
                     </Button>
-                    <Button variant="ghost" onClick={() => recalcFinalAndPFinal()}>
+                    <Button variant="ghost" onClick={() => recalcFinalAndPFinal()} disabled={currentSoireeLocked || readOnlyMode}>
                       Calculer finales
                     </Button>
                     <Button variant="ghost" onClick={() => setCompactMode((v) => !v)}>
@@ -3318,10 +3452,10 @@ export default function App() {
                             </div>
                             <div className="mt-2 grid grid-cols-1 gap-2">
                               <div className="grid grid-cols-2 gap-2">
-                                <Button variant={winner === m.a ? "primary" : "ghost"} onClick={() => pickWinner(m.a)} disabled={!m.a || !m.b} >
+                                <Button variant={winner === m.a ? "primary" : "ghost"} onClick={() => pickWinner(m.a)} disabled={!m.a || !m.b || readOnlyMode || currentSoireeLocked} >
                                   {m.a || "A"}
                                 </Button>
-                                <Button variant={winner === m.b ? "primary" : "ghost"} onClick={() => pickWinner(m.b)} disabled={!m.a || !m.b}>
+                                <Button variant={winner === m.b ? "primary" : "ghost"} onClick={() => pickWinner(m.b)} disabled={!m.a || !m.b || readOnlyMode || currentSoireeLocked}>
                                   {m.b || "B"}
                                 </Button>
                               </div>
@@ -3330,7 +3464,7 @@ export default function App() {
                                 <button
                                   className="text-white/70 underline"
                                   onClick={() => swapMatchPlayers(m.id)}
-                                  disabled={!m.a && !m.b}
+                                  disabled={!m.a && !m.b || readOnlyMode || currentSoireeLocked}
                                 >
                                   Inverser A/B
                                 </button>
@@ -3340,7 +3474,7 @@ export default function App() {
                                 <button
                                   className="rounded-lg border border-white/15 bg-black/40 px-2 py-1 text-[11px] hover:bg-white/10"
                                   onClick={() => startMatchTimer(m.id)}
-                                  disabled={!m.a || !m.b || readOnlyMode}
+                                  disabled={!m.a || !m.b || readOnlyMode || currentSoireeLocked}
                                 >
                                   {m.startedAt && !m.endedAt ? "Relancer" : m.startedAt ? "Reprendre" : "Démarrer"}
                                 </button>
@@ -3351,7 +3485,7 @@ export default function App() {
                                   onChange={(v) => setMatchCheckoutBy(m.id, (v as "" | "A" | "B"))}
                                   options={["A", "B"]}
                                   placeholder="Checkout ≥100 par…"
-                                  disabled={!m.a || !m.b}
+                                  disabled={!m.a || !m.b || readOnlyMode || currentSoireeLocked}
                                 />
                               </div>
                             </div>
@@ -3395,24 +3529,24 @@ export default function App() {
                             <button
                               className="rounded-lg border border-white/15 bg-black/40 px-2 py-1 text-[11px] hover:bg-white/10"
                               onClick={() => startMatchTimer(m.id)}
-                              disabled={!m.a || !m.b || readOnlyMode}
+                              disabled={!m.a || !m.b || readOnlyMode || currentSoireeLocked}
                             >
                               {m.startedAt && !m.endedAt ? "Relancer" : m.startedAt ? "Reprendre" : "Démarrer"}
                             </button>
                           </div>
                           <div className="mt-3 grid grid-cols-1 gap-2">
                             <div className="grid grid-cols-2 gap-2">
-                              <Button variant={winner === m.a ? "primary" : "ghost"} onClick={() => pickWinner(m.a)} disabled={!m.a || !m.b}>
+                              <Button variant={winner === m.a ? "primary" : "ghost"} onClick={() => pickWinner(m.a)} disabled={!m.a || !m.b || readOnlyMode || currentSoireeLocked}>
                                 {m.a || "A"}
                               </Button>
-                              <Button variant={winner === m.b ? "primary" : "ghost"} onClick={() => pickWinner(m.b)} disabled={!m.a || !m.b}>
+                              <Button variant={winner === m.b ? "primary" : "ghost"} onClick={() => pickWinner(m.b)} disabled={!m.a || !m.b || readOnlyMode || currentSoireeLocked}>
                                 {m.b || "B"}
                               </Button>
                             </div>
                             <button
                               className="text-xs text-white/70 underline"
                               onClick={() => swapMatchPlayers(m.id)}
-                              disabled={!m.a && !m.b}
+                              disabled={!m.a && !m.b || readOnlyMode || currentSoireeLocked}
                             >
                               Inverser A/B
                             </button>
@@ -3421,7 +3555,7 @@ export default function App() {
                               onChange={(v) => setMatchCheckoutBy(m.id, (v as "" | "A" | "B"))}
                               options={["A", "B"]}
                               placeholder="Checkout ≥100 par…"
-                              disabled={!m.a || !m.b}
+                              disabled={!m.a || !m.b || readOnlyMode || currentSoireeLocked}
                             />
                           </div>
                           <div className="mt-3 flex items-center justify-between text-xs">
@@ -3502,7 +3636,7 @@ export default function App() {
                                   }}
                                   options={[m.a, m.b].map(normName).filter(Boolean)}
                                   placeholder="Vainqueur…"
-                                  disabled={!m.a || !m.b}
+                                  disabled={!m.a || !m.b || readOnlyMode || currentSoireeLocked}
                                 />
                               </td>
                               <td className="py-2 pr-2">
@@ -3511,7 +3645,7 @@ export default function App() {
                                   <button
                                     className="rounded-lg border border-white/15 bg-black/40 px-2 py-1 text-[11px] hover:bg-white/10"
                                     onClick={() => startMatchTimer(m.id)}
-                                    disabled={!m.a || !m.b || readOnlyMode}
+                                    disabled={!m.a || !m.b || readOnlyMode || currentSoireeLocked}
                                   >
                                     {m.startedAt && !m.endedAt ? "Relancer" : m.startedAt ? "Reprendre" : "Start"}
                                   </button>
@@ -3523,7 +3657,7 @@ export default function App() {
                                   onChange={(v) => setMatchCheckoutBy(m.id, (v as "" | "A" | "B"))}
                                   options={["A", "B"]}
                                   placeholder="Checkout ≥100 par…"
-                                  disabled={!m.a || !m.b}
+                                  disabled={!m.a || !m.b || readOnlyMode || currentSoireeLocked}
                                 />
                               </td>
                               <td className="py-2 pr-2 font-semibold">{ptsA}</td>
@@ -3582,15 +3716,18 @@ export default function App() {
                     </div>
                   )}
                   <div className="pt-1 flex flex-wrap gap-2">
-                    <Button variant="ghost" onClick={() => startSoireeTimer()} disabled={readOnlyMode}>
+                    <Button variant="ghost" onClick={() => startSoireeTimer()} disabled={readOnlyMode || currentSoireeLocked}>
                       {soireeTiming.startedAt ? "Reprendre" : "Démarrer soirée"}
                     </Button>
                     <Button
                       variant="ghost"
                       onClick={() => stopSoireeTimer()}
-                      disabled={readOnlyMode || !soireeTiming.startedAt || Boolean(soireeTiming.endedAt)}
+                      disabled={readOnlyMode || currentSoireeLocked || !soireeTiming.startedAt || Boolean(soireeTiming.endedAt)}
                     >
                       Stop soirée
+                    </Button>
+                    <Button variant={currentSoireeLocked ? "danger" : "ghost"} onClick={() => setCurrentSoireeLocked(!currentSoireeLocked)} disabled={readOnlyMode}>
+                      {currentSoireeLocked ? "Déverrouiller" : "Verrouiller"}
                     </Button>
                   </div>
                 </div>
@@ -3687,6 +3824,7 @@ export default function App() {
                             onChange={(v) => setQualifiersOverride({ A1: normName(v) })}
                             options={currentSoiree.pools.A}
                             placeholder="Auto…"
+                            disabled={readOnlyMode || currentSoireeLocked}
                           />
                         </div>
                         <div>
@@ -3696,6 +3834,7 @@ export default function App() {
                             onChange={(v) => setQualifiersOverride({ A2: normName(v) })}
                             options={currentSoiree.pools.A}
                             placeholder="Auto…"
+                            disabled={readOnlyMode || currentSoireeLocked}
                           />
                         </div>
                       </div>
@@ -3708,6 +3847,7 @@ export default function App() {
                             onChange={(v) => setQualifiersOverride({ B1: normName(v) })}
                             options={currentSoiree.pools.B}
                             placeholder="Auto…"
+                            disabled={readOnlyMode || currentSoireeLocked}
                           />
                         </div>
                         <div>
@@ -3717,12 +3857,13 @@ export default function App() {
                             onChange={(v) => setQualifiersOverride({ B2: normName(v) })}
                             options={currentSoiree.pools.B}
                             placeholder="Auto…"
+                            disabled={readOnlyMode || currentSoireeLocked}
                           />
                         </div>
                       </div>
 
                       <div className="flex gap-2">
-                        <Button variant="ghost" onClick={() => setQualifiersOverride({ A1: "", A2: "", B1: "", B2: "" })}>
+                        <Button variant="ghost" onClick={() => setQualifiersOverride({ A1: "", A2: "", B1: "", B2: "" })} disabled={readOnlyMode || currentSoireeLocked}>
                           Réinitialiser (auto)
                         </Button>
                       </div>
@@ -3795,7 +3936,7 @@ export default function App() {
                             <select
                               className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-white"
                               value={status}
-                              disabled={readOnlyMode}
+                              disabled={readOnlyMode || currentSoireeLocked}
                               onChange={(e) => setSoireePlayerPresence(p, e.target.value as PresenceStatus)}
                             >
                               <option value="HERE">Présent</option>
@@ -3807,7 +3948,7 @@ export default function App() {
                                 type="time"
                                 className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-white"
                                 value={eta}
-                                disabled={readOnlyMode}
+                                disabled={readOnlyMode || currentSoireeLocked}
                                 onChange={(e) => setSoireePlayerEta(p, e.target.value)}
                               />
                             )}
@@ -3819,7 +3960,7 @@ export default function App() {
                 </div>
 
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <Button variant="ghost" onClick={() => setAllSoireePlayersPresent()} disabled={readOnlyMode}>
+                  <Button variant="ghost" onClick={() => setAllSoireePlayersPresent()} disabled={readOnlyMode || currentSoireeLocked}>
                     Tout le monde présent
                   </Button>
                 </div>
@@ -4252,7 +4393,7 @@ export default function App() {
               <Section
                 title={`Re-buys — Soirée ${currentSoiree.number}`}
                 right={
-                  <Button variant="ghost" onClick={() => addRebuy()}>
+                  <Button variant="ghost" onClick={() => addRebuy()} disabled={readOnlyMode || currentSoireeLocked}>
                     + Ajouter un re-buy
                   </Button>
                 }
@@ -4300,7 +4441,7 @@ export default function App() {
                         <div key={r.id} className="rounded-2xl border border-white/10 bg-black/30 p-4">
                           <div className="flex items-center justify-between gap-2">
                             <div className="font-semibold">Re-buy #{idx + 1}</div>
-                            <Button variant="danger" onClick={() => deleteRebuy(r.id)}>
+                            <Button variant="danger" onClick={() => deleteRebuy(r.id)} disabled={readOnlyMode || currentSoireeLocked}>
                               Supprimer
                             </Button>
                           </div>
@@ -4318,6 +4459,7 @@ export default function App() {
                                 }}
                                 options={players}
                                 placeholder="Choisir…"
+                                disabled={readOnlyMode || currentSoireeLocked}
                               />
                             </div>
                             <div>
@@ -4333,6 +4475,7 @@ export default function App() {
                                 }}
                                 options={players}
                                 placeholder="A…"
+                                disabled={readOnlyMode || currentSoireeLocked}
                               />
                             </div>
                             <div>
@@ -4348,6 +4491,7 @@ export default function App() {
                                 }}
                                 options={players}
                                 placeholder="B…"
+                                disabled={readOnlyMode || currentSoireeLocked}
                               />
                             </div>
                             <div>
@@ -4357,7 +4501,7 @@ export default function App() {
                                 onChange={(v) => updateRebuy(r.id, { winner: normName(v) })}
                                 options={winnerOptions}
                                 placeholder="Vainqueur…"
-                                disabled={!a || !b}
+                                disabled={!a || !b || readOnlyMode || currentSoireeLocked}
                               />
                             </div>
                           </div>
@@ -5565,6 +5709,61 @@ export default function App() {
               {currentSeason.players.length - absentPlayersSelection.length < 4 && (
                 <div className="mt-2 text-xs text-orange-300">Il faut au moins 4 joueurs présents.</div>
               )}
+            </div>
+          </div>
+        )}
+
+        {showSoireeClosureModal && closureSoiree && (
+          <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-sm p-4 grid place-items-center">
+            <div className="w-full max-w-2xl rounded-2xl border border-emerald-400/25 bg-[#0f172a] p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-base font-semibold">Soirée {closureSoiree.number} terminée</h3>
+                  <div className="text-xs text-white/60">Clôture automatique détectée, actions de fin de soirée.</div>
+                </div>
+                <Pill color="#22c55e">Fin détectée</Pill>
+              </div>
+
+              <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                  <div className="text-xs text-white/60">Durée totale</div>
+                  <div className="mt-1 text-xl font-extrabold">{formatDuration(getSoireeDurationMs(closureSoiree, clockNow))}</div>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                  <div className="text-xs text-white/60">Matchs joués</div>
+                  <div className="mt-1 text-xl font-extrabold">
+                    {closureSoiree.matches.filter((m: CoreMatch) => Boolean(normName(m.winner))).length}/{closureSoiree.matches.length}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                  <div className="text-xs text-white/60">Re-buys</div>
+                  <div className="mt-1 text-xl font-extrabold">{closureSoiree.rebuys.length}</div>
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button variant="ghost" onClick={() => exportSoireeSummaryText(closureSoiree)}>
+                  Export résumé (.txt)
+                </Button>
+                <Button variant="ghost" onClick={() => exportSoireeSummaryPDF(closureSoiree)}>
+                  Export résumé (PDF)
+                </Button>
+                <Button
+                  variant={closureSoiree.locked ? "danger" : "primary"}
+                  onClick={() => {
+                    if (selectedSoireeNumber !== closureSoiree.number) setSelectedSoireeNumber(closureSoiree.number);
+                    setSoireeLockedById(closureSoiree.id, !Boolean(closureSoiree.locked));
+                  }}
+                >
+                  {closureSoiree.locked ? "Déverrouiller la soirée" : "Verrouiller la soirée"}
+                </Button>
+              </div>
+
+              <div className="mt-4 flex justify-end">
+                <Button variant="primary" onClick={() => setShowSoireeClosureModal(false)}>
+                  Fermer
+                </Button>
+              </div>
             </div>
           </div>
         )}
