@@ -1426,30 +1426,6 @@ export default function App() {
     }
   }, [currentSeason.soirees, selectedSoireeNumber]);
 
-  useEffect(() => {
-    if (readOnlyMode) return;
-    if (!currentSoiree || currentSoiree.matches.length === 0) return;
-    const latestNumber = Math.max(...currentSeason.soirees.map((s: Soiree) => s.number));
-    if (currentSoiree.number !== latestNumber) return;
-    const allDone = currentSoiree.matches.every((m: CoreMatch) => Boolean(normName(m.winner)));
-    if (!allDone || currentSoiree.closedAt) return;
-
-    const now = Date.now();
-    updateSeason((season) => {
-      const soirees = season.soirees.map((s: Soiree) => {
-        if (s.id !== currentSoiree.id) return s;
-        if (s.closedAt) return s;
-        return { ...s, closedAt: now, endedAt: s.endedAt ?? now };
-      });
-      return { ...season, soirees };
-    });
-    createSnapshot(`Fin Soirée ${currentSoiree.number}`);
-    setClosureSoireeId(currentSoiree.id);
-    setShowSoireeClosureModal(true);
-    logAudit("Fin de soirée détectée", `Soirée ${currentSoiree.number}`);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSoiree.id, currentSoiree.matches, currentSoiree.closedAt, currentSoiree.number, currentSeason.soirees, readOnlyMode]);
-
   const effectiveRules = useMemo(
     () => getRules(state.system.rulesProfile, state.system.customRules),
     [state.system.rulesProfile, state.system.customRules]
@@ -1486,6 +1462,30 @@ export default function App() {
   }, [state.seasons, closureSoireeId]);
   const currentSoireeLocked = Boolean(currentSoiree?.locked);
   const fairSoireeMode = useMemo(() => isFairSoireeMode(currentSoiree), [currentSoiree]);
+
+  useEffect(() => {
+    if (readOnlyMode) return;
+    if (!currentSoiree || currentSoiree.matches.length === 0) return;
+    const latestNumber = Math.max(...currentSeason.soirees.map((s: Soiree) => s.number));
+    if (currentSoiree.number !== latestNumber) return;
+    const allDone = currentSoiree.matches.every((m: CoreMatch) => Boolean(normName(m.winner)));
+    if (!allDone || currentSoiree.closedAt) return;
+
+    const now = Date.now();
+    updateSeason((season) => {
+      const soirees = season.soirees.map((s: Soiree) => {
+        if (s.id !== currentSoiree.id) return s;
+        if (s.closedAt) return s;
+        return { ...s, closedAt: now, endedAt: s.endedAt ?? now };
+      });
+      return { ...season, soirees };
+    });
+    createSnapshot(`Fin Soirée ${currentSoiree.number}`);
+    setClosureSoireeId(currentSoiree.id);
+    setShowSoireeClosureModal(true);
+    logAudit("Fin de soirée détectée", `Soirée ${currentSoiree.number}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSoiree.id, currentSoiree.matches, currentSoiree.closedAt, currentSoiree.number, currentSeason.soirees, readOnlyMode]);
 
   const soireePlayers = useMemo(() => {
     return uniq([...currentSoiree.pools.A, ...currentSoiree.pools.B].map(normName)).filter(isNonEmptyString);
