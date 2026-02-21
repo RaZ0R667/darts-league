@@ -1077,6 +1077,21 @@ function getMatchDurationMs(match: CoreMatch, now: number) {
   return Math.max(0, end - match.startedAt);
 }
 
+function parseEtaTodayMs(hhmm: string, nowMs: number) {
+  const v = normName(hhmm);
+  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(v);
+  if (!m) return null;
+  const now = new Date(nowMs);
+  const eta = new Date(nowMs);
+  eta.setHours(Number(m[1]), Number(m[2]), 0, 0);
+  if (eta.getTime() < now.getTime() - 5 * 60 * 1000) return nowMs;
+  return eta.getTime();
+}
+
+function formatTimeHM(ms: number) {
+  return new Date(ms).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+}
+
 function Pill({ children, color }: { children: React.ReactNode; color?: string }) {
   return (
     <span
@@ -1569,6 +1584,77 @@ export default function App() {
       longestMatchMs,
     };
   }, [currentSoiree.startedAt, currentSoiree.endedAt, currentSoiree.matches, clockNow]);
+
+  const soireeEta = useMemo(() => {
+    const fallbackAvgMs = 8 * 60 * 1000;
+    const avgMatchMs = soireeTiming.avgMatchMs > 0 ? soireeTiming.avgMatchMs : fallbackAvgMs;
+    const remaining = currentSoiree.matches.filter((m: CoreMatch) => !normName(m.winner));
+    const knownRemaining = remaining.filter((m: CoreMatch) => normName(m.a) && normName(m.b));
+    const unknownRemaining = remaining.length - knownRemaining.length;
+
+    const isAbsent = (p: string) => soireeAttendance.get(p) === "ABSENT";
+    const isLate = (p: string) => soireeAttendance.get(p) === "LATE";
+
+    const blockedKnown = knownRemaining.filter((m: CoreMatch) => isAbsent(m.a) || isAbsent(m.b));
+    const knownPlayable = knownRemaining.filter((m: CoreMatch) => !isAbsent(m.a) && !isAbsent(m.b));
+    const delayedKnown = knownPlayable.filter((m: CoreMatch) => isLate(m.a) || isLate(m.b));
+    const immediateKnown = knownPlayable.length - delayedKnown.length;
+
+    const delayedPlayers = uniq(
+      delayedKnown.flatMap((m: CoreMatch) => [m.a, m.b]).filter((p: string) => isLate(p))
+    );
+    const delayedArrivals = delayedPlayers
+      .map((p: string) => parseEtaTodayMs(currentSoiree.arrivalEta?.[p] ?? "", clockNow))
+      .filter((x): x is number => typeof x === "number" && Number.isFinite(x));
+
+    const expectedPlayableCount = Math.max(0, knownPlayable.length + unknownRemaining);
+    const immediateCount = Math.max(0, immediateKnown + unknownRemaining);
+    const delayedCount = Math.max(0, delayedKnown.length);
+    const immediateMs = immediateCount * avgMatchMs;
+    const delayedMs = delayedCount * avgMatchMs;
+    const earliestDelayedTs = delayedArrivals.length ? Math.min(...delayedArrivals) : null;
+    const waitGapMs =
+      delayedCount > 0 && earliestDelayedTs
+        ? Math.max(0, earliestDelayedTs - (clockNow + immediateMs))
+        : 0;
+    const etaMs = clockNow + immediateMs + waitGapMs + delayedMs;
+    const remainingMs = Math.max(0, etaMs - clockNow);
+
+    return {
+      avgMatchMs,
+      remainingCount: remaining.length,
+      expectedPlayableCount,
+      blockedCount: blockedKnown.length,
+      delayedCount,
+      delayedPlayers,
+      waitGapMs,
+      etaMs,
+      remainingMs,
+    };
+  }, [clockNow, currentSoiree.matches, currentSoiree.arrivalEta, soireeAttendance, soireeTiming.avgMatchMs]);
+
+  const liveSoireeRanking = useMemo(() => {
+    const participants = uniq([...currentSoiree.pools.A, ...currentSoiree.pools.B].map(normName)).filter(isNonEmptyString);
+    const { pts, wins } = computePointsFromMatches(
+      currentSoiree.matches,
+      currentSoiree.rebuys,
+      currentSoiree.number,
+      currentSeason,
+      effectiveRules
+    );
+    const rows = participants.map((p: string) => ({ name: p, pts: pts.get(p) ?? 0, wins: wins.get(p) ?? 0 }));
+    rows.sort((a: { name: string; pts: number; wins: number }, b: { name: string; pts: number; wins: number }) =>
+      b.pts - a.pts || b.wins - a.wins || a.name.localeCompare(b.name)
+    );
+    return rows;
+  }, [currentSoiree.matches, currentSoiree.rebuys, currentSoiree.number, currentSoiree.pools.A, currentSoiree.pools.B, currentSeason, effectiveRules]);
+
+  const tvLiveFocus = useMemo(() => {
+    const running = currentSoiree.matches
+      .filter((m: CoreMatch) => Boolean(m.startedAt) && !normName(m.winner))
+      .sort((a: CoreMatch, b: CoreMatch) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0];
+    return running ?? liveSchedule.nextMatch ?? null;
+  }, [currentSoiree.matches, liveSchedule.nextMatch]);
 
 
   const currentPoolStandings = useMemo(() => {
@@ -3013,6 +3099,97 @@ export default function App() {
           </div>
         )}
 
+        {tvMode && tab === "SOIREE" && (
+          <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <div className="lg:col-span-2 rounded-2xl border border-cyan-300/25 bg-gradient-to-br from-cyan-500/15 via-black/40 to-emerald-500/10 p-6 shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs uppercase tracking-[0.28em] text-cyan-200/90">Live Match</div>
+                {tvLiveFocus ? (
+                  <Pill color={tvLiveFocus.startedAt && !normName(tvLiveFocus.winner) ? "#06b6d4" : "#22c55e"}>
+                    {tvLiveFocus.startedAt && !normName(tvLiveFocus.winner) ? "En cours" : "À jouer"}
+                  </Pill>
+                ) : (
+                  <Pill>Aucun match</Pill>
+                )}
+              </div>
+
+              {tvLiveFocus ? (
+                <>
+                  <div className="mt-4 grid grid-cols-[1fr,auto,1fr] items-center gap-4">
+                    <div className="text-3xl font-extrabold tracking-tight">{tvLiveFocus.a || "—"}</div>
+                    <div className="text-white/50 text-xl">VS</div>
+                    <div className="text-right text-3xl font-extrabold tracking-tight">{tvLiveFocus.b || "—"}</div>
+                  </div>
+                  <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                      <div className="text-[11px] text-white/60">Chrono match</div>
+                      <div className="mt-1 text-3xl font-black">
+                        {tvLiveFocus.startedAt ? formatDuration(getMatchDurationMs(tvLiveFocus, clockNow)) : "00:00"}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                      <div className="text-[11px] text-white/60">Phase</div>
+                      <div className="mt-1 text-xl font-extrabold">
+                        {tvLiveFocus.phase}
+                        {tvLiveFocus.pool ? ` ${tvLiveFocus.pool}` : ""}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                      <div className="text-[11px] text-white/60">Format</div>
+                      <div className="mt-1 text-xl font-extrabold">{tvLiveFocus.format}</div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="mt-4 text-sm text-white/70">Aucun match à afficher pour le moment.</div>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
+                <div className="text-xs uppercase tracking-[0.2em] text-white/50">Prochains matchs</div>
+                <div className="mt-2 space-y-2 text-sm">
+                  {liveSchedule.candidates
+                    .filter((c) => c.match.id !== tvLiveFocus?.id)
+                    .slice(0, 3)
+                    .map((c, idx: number) => (
+                      <div key={c.match.id} className="rounded-lg bg-black/25 px-2 py-2">
+                        <div className="text-white/70 text-xs">{idx + 1}. recommandé</div>
+                        <div className="font-semibold">#{c.match.order} {c.match.a} vs {c.match.b}</div>
+                      </div>
+                    ))}
+                  {liveSchedule.candidates.filter((c) => c.match.id !== tvLiveFocus?.id).length === 0 && (
+                    <div className="text-xs text-white/60">Pas d’autre match jouable actuellement.</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
+                <div className="text-xs uppercase tracking-[0.2em] text-white/50">Fin estimée soirée</div>
+                <div className="mt-1 text-2xl font-extrabold">{soireeEta.expectedPlayableCount > 0 ? formatTimeHM(soireeEta.etaMs) : "—"}</div>
+                <div className="text-xs text-white/60 mt-1">
+                  Restant: {soireeEta.expectedPlayableCount} matchs • {formatDuration(soireeEta.remainingMs)}
+                </div>
+                {soireeEta.waitGapMs > 0 && (
+                  <div className="mt-1 text-xs text-yellow-300">Attente retards estimée: {formatDuration(soireeEta.waitGapMs)}</div>
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
+                <div className="text-xs uppercase tracking-[0.2em] text-white/50">Classement live (soirée)</div>
+                <div className="mt-2 space-y-1 text-sm">
+                  {liveSoireeRanking.slice(0, 5).map((r, idx: number) => (
+                    <div key={r.name} className="flex items-center justify-between rounded-lg bg-black/25 px-2 py-1">
+                      <span className="text-white/70">{idx + 1}. {r.name}</span>
+                      <span className="font-bold">{r.pts} pts</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-3">
           <div className="md:col-span-2 rounded-2xl border border-white/10 bg-black/30 p-5">
             <div className="text-xs text-white/60">Jackpot actuel</div>
@@ -3383,6 +3560,27 @@ export default function App() {
                     <span>Match le plus long</span>
                     <span>{soireeTiming.longestMatchMs > 0 ? formatDuration(soireeTiming.longestMatchMs) : "—"}</span>
                   </div>
+                  <div className="h-px bg-white/10 my-2" />
+                  <div className="flex items-center justify-between text-xs text-white/60">
+                    <span>Fin estimée</span>
+                    <span>{soireeEta.expectedPlayableCount > 0 ? formatTimeHM(soireeEta.etaMs) : "—"}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-white/60">
+                    <span>Temps restant estimé</span>
+                    <span>{soireeEta.expectedPlayableCount > 0 ? formatDuration(soireeEta.remainingMs) : "—"}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-white/60">
+                    <span>Matchs restants (estimés)</span>
+                    <span>{soireeEta.expectedPlayableCount}</span>
+                  </div>
+                  {soireeEta.waitGapMs > 0 && (
+                    <div className="text-xs text-yellow-300">Temps mort probable (retards): {formatDuration(soireeEta.waitGapMs)}</div>
+                  )}
+                  {soireeEta.blockedCount > 0 && (
+                    <div className="text-xs text-orange-300">
+                      {soireeEta.blockedCount} match(s) bloqué(s) par statut absent (non inclus dans ETA).
+                    </div>
+                  )}
                   <div className="pt-1 flex flex-wrap gap-2">
                     <Button variant="ghost" onClick={() => startSoireeTimer()} disabled={readOnlyMode}>
                       {soireeTiming.startedAt ? "Reprendre" : "Démarrer soirée"}
