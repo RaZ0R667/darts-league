@@ -16,6 +16,7 @@ type Phase = "POULE" | "DEMI" | "PFINAL" | "FINAL";
 type MatchStatus = "PENDING" | "VALIDATED" | "CONTESTED";
 type RulesProfile = "STANDARD" | "FUN" | "CUSTOM";
 type PresenceStatus = "HERE" | "LATE" | "ABSENT";
+type TvScene = "WARMUP" | "LIVE" | "FINALE" | "PODIUM";
 type AppTab =
   | "SOIREE"
   | "CLASSEMENT"
@@ -1809,6 +1810,32 @@ export default function App() {
     CLASSEMENT: "Classement",
     H2H: "Confrontations",
   };
+  const tvScene = useMemo<TvScene>(() => {
+    if (!tvMode || tab !== "SOIREE") return "LIVE";
+    const matches = currentSoiree.matches;
+    const playedCount = matches.filter((m: CoreMatch) => Boolean(normName(m.winner))).length;
+    const final = matches.find((m: CoreMatch) => m.phase === "FINAL");
+    const pfinal = matches.find((m: CoreMatch) => m.phase === "PFINAL");
+    const finalReady = Boolean(final && normName(final.a) && normName(final.b));
+    const finalDone = Boolean(final && normName(final.winner));
+    const podiumDone = finalDone && Boolean(pfinal && normName(pfinal.winner));
+    if (podiumDone) return "PODIUM";
+    if (finalReady) return "FINALE";
+    if (playedCount === 0) return "WARMUP";
+    return "LIVE";
+  }, [tvMode, tab, currentSoiree.matches]);
+  const tvSceneMeta = useMemo(() => {
+    if (tvScene === "WARMUP") {
+      return { label: "Warmup", subtitle: "Ouverture de la soirée • mise en route des poules" };
+    }
+    if (tvScene === "FINALE") {
+      return { label: "Finale", subtitle: "Phases finales actives • tension maximale" };
+    }
+    if (tvScene === "PODIUM") {
+      return { label: "Podium", subtitle: "Résultats validés • cérémonie finale" };
+    }
+    return { label: "Live", subtitle: "Rotation en cours • suivi des matchs en direct" };
+  }, [tvScene]);
 
   const allNavTabs: Array<[AppTab, string]> = [
     ["SOIREE", "Soirée"],
@@ -3153,7 +3180,7 @@ export default function App() {
 
 
   return (
-    <div className={`min-h-screen text-white app-shell ${tvMode ? "tv-mode" : ""}`}>
+    <div className={`min-h-screen text-white app-shell ${tvMode ? `tv-mode tv-scene-${tvScene.toLowerCase()}` : ""}`}>
       <div className="mx-auto max-w-6xl px-4 pt-6 pb-24 md:pb-6">
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div className="flex-1">
@@ -3225,6 +3252,21 @@ export default function App() {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {tvMode && tab === "SOIREE" && (
+          <div className="mb-4 tv-scene-banner rounded-2xl border border-white/10 bg-black/35 p-4 shadow-[0_20px_50px_rgba(0,0,0,0.35)]">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.28em] text-white/60">Arena Scene</div>
+                <div className="mt-1 text-xl font-extrabold">{tvSceneMeta.label}</div>
+                <div className="text-xs text-white/70">{tvSceneMeta.subtitle}</div>
+              </div>
+              <Pill color={tvScene === "PODIUM" ? "#eab308" : tvScene === "FINALE" ? "#f97316" : tvScene === "WARMUP" ? "#06b6d4" : "#22c55e"}>
+                {tvScene}
+              </Pill>
+            </div>
           </div>
         )}
 

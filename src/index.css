@@ -54,6 +54,49 @@ body {
     radial-gradient(900px 500px at 50% 115%, rgba(34, 197, 94, 0.2), transparent 60%);
 }
 
+.app-shell.tv-mode.tv-scene-warmup {
+  background:
+    radial-gradient(900px 500px at 20% -10%, rgba(6, 182, 212, 0.28), transparent 58%),
+    radial-gradient(900px 450px at 82% 0%, rgba(59, 130, 246, 0.24), transparent 60%),
+    radial-gradient(1000px 520px at 50% 112%, rgba(34, 197, 94, 0.2), transparent 62%);
+}
+
+.app-shell.tv-mode.tv-scene-live {
+  background:
+    radial-gradient(1000px 520px at 50% -14%, rgba(34, 197, 94, 0.24), transparent 58%),
+    radial-gradient(900px 500px at 86% -8%, rgba(59, 130, 246, 0.26), transparent 60%),
+    radial-gradient(900px 460px at 14% 102%, rgba(244, 63, 94, 0.2), transparent 62%);
+}
+
+.app-shell.tv-mode.tv-scene-finale {
+  background:
+    radial-gradient(950px 520px at 50% -14%, rgba(249, 115, 22, 0.32), transparent 58%),
+    radial-gradient(950px 520px at 12% -2%, rgba(234, 179, 8, 0.22), transparent 60%),
+    radial-gradient(900px 500px at 84% 106%, rgba(239, 68, 68, 0.22), transparent 62%);
+}
+
+.app-shell.tv-mode.tv-scene-podium {
+  background:
+    radial-gradient(1000px 560px at 50% -16%, rgba(234, 179, 8, 0.34), transparent 58%),
+    radial-gradient(900px 500px at 16% 8%, rgba(245, 158, 11, 0.2), transparent 60%),
+    radial-gradient(900px 500px at 86% 106%, rgba(34, 197, 94, 0.2), transparent 62%);
+}
+
+.tv-scene-banner {
+  position: relative;
+  overflow: hidden;
+}
+
+.tv-scene-banner::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(110deg, transparent 15%, rgba(255, 255, 255, 0.14) 35%, transparent 55%);
+  transform: translateX(-120%);
+  animation: arenaSweep 4.2s ease-in-out infinite;
+}
+
 .app-shell.tv-mode::before {
   content: "";
   position: fixed;
@@ -82,6 +125,13 @@ body {
 @keyframes tvFade {
   0% { opacity: 0; transform: translateY(8px) scale(0.99); }
   100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes arenaSweep {
+  0% { transform: translateX(-120%); opacity: 0; }
+  15% { opacity: 0.5; }
+  45% { opacity: 0.75; }
+  100% { transform: translateX(140%); opacity: 0; }
 }
 
 .tv-spotlight {
