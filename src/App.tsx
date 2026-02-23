@@ -731,6 +731,39 @@ function computeAdvancedStats(season: Season) {
   return { winRates, clutch, semiRuns };
 }
 
+function computeSoireeRankingRows(soiree: Soiree, season: Season, rules: RulesConfig) {
+  const participants = uniq([...soiree.pools.A, ...soiree.pools.B].map(normName)).filter(isNonEmptyString);
+  const { pts, wins, bonus } = computePointsFromMatches(soiree.matches, soiree.rebuys, soiree.number, season, rules);
+  const rows = participants.map((p: string) => ({
+    name: p,
+    pts: pts.get(p) ?? 0,
+    wins: wins.get(p) ?? 0,
+    bonus: bonus.get(p) ?? 0,
+  }));
+  rows.sort((a, b) => b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name));
+  return rows;
+}
+
+function computeSoireePodium(soiree: Soiree, season: Season, rules: RulesConfig) {
+  const final = soiree.matches.find((m: CoreMatch) => m.phase === "FINAL");
+  const pfinal = soiree.matches.find((m: CoreMatch) => m.phase === "PFINAL");
+  const wFinal = normName(final?.winner ?? "");
+  const aFinal = normName(final?.a ?? "");
+  const bFinal = normName(final?.b ?? "");
+  const second =
+    wFinal && (wFinal === aFinal || wFinal === bFinal) ? (wFinal === aFinal ? bFinal : aFinal) : "";
+  const third = normName(pfinal?.winner ?? "");
+  if (wFinal && second && third) return { first: wFinal, second, third, provisional: false as const };
+
+  const rows = computeSoireeRankingRows(soiree, season, rules);
+  return {
+    first: rows[0]?.name ?? "",
+    second: rows[1]?.name ?? "",
+    third: rows[2]?.name ?? "",
+    provisional: true as const,
+  };
+}
+
 function makeEmptySoiree(number = 1): Soiree {
   return {
     id: uid("s"),
@@ -1256,6 +1289,10 @@ export default function App() {
   const [readOnlyRoomCode, setReadOnlyRoomCode] = useState("");
   const [showSoireeClosureModal, setShowSoireeClosureModal] = useState(false);
   const [closureSoireeId, setClosureSoireeId] = useState("");
+  const [closureAutoExportStatus, setClosureAutoExportStatus] = useState("");
+  const [flowAutoAdvance, setFlowAutoAdvance] = useState(true);
+  const [flowMatchId, setFlowMatchId] = useState("");
+  const [queuedAutoAdvanceFromMatchId, setQueuedAutoAdvanceFromMatchId] = useState("");
   const [newPlayerName, setNewPlayerName] = useState("");
   const [bulkPlayersText, setBulkPlayersText] = useState("");
   const [editingPlayer, setEditingPlayer] = useState<string | null>(null);
@@ -1278,6 +1315,7 @@ export default function App() {
   const lastSerializedRef = useRef(JSON.stringify(state));
   const lastAutoSnapshotAtRef = useRef(0);
   const skipNextCloudPushRef = useRef(false);
+  const closureAutoExportDoneRef = useRef<string>("");
 
   const currentSeason = useMemo<Season>(() => {
     return currentSeasons.find((s: Season) => s.id === state.activeSeasonId) ?? currentSeasons[0];
@@ -1454,14 +1492,16 @@ export default function App() {
   const currentSoiree = useMemo(() => {
     return currentSeason.soirees.find((s: Soiree) => s.number === selectedSoireeNumber) ?? currentSeason.soirees[0];
   }, [currentSeason.soirees, selectedSoireeNumber]);
-  const closureSoiree = useMemo(() => {
+  const closureContext = useMemo(() => {
     if (!closureSoireeId) return null;
     for (const season of state.seasons) {
       const found = season.soirees.find((s: Soiree) => s.id === closureSoireeId);
-      if (found) return found;
+      if (found) return { season, soiree: found };
     }
     return null;
   }, [state.seasons, closureSoireeId]);
+  const closureSoiree = closureContext?.soiree ?? null;
+  const closureSeason = closureContext?.season ?? currentSeason;
   const currentSoireeLocked = Boolean(currentSoiree?.locked);
   const fairSoireeMode = useMemo(() => isFairSoireeMode(currentSoiree), [currentSoiree]);
 
@@ -1484,10 +1524,16 @@ export default function App() {
     });
     createSnapshot(`Fin Soirée ${currentSoiree.number}`);
     setClosureSoireeId(currentSoiree.id);
+    setClosureAutoExportStatus("");
     setShowSoireeClosureModal(true);
     logAudit("Fin de soirée détectée", `Soirée ${currentSoiree.number}`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSoiree.id, currentSoiree.matches, currentSoiree.closedAt, currentSoiree.number, currentSeason.soirees, readOnlyMode]);
+
+  useEffect(() => {
+    setFlowMatchId("");
+    setQueuedAutoAdvanceFromMatchId("");
+  }, [currentSoiree.id]);
 
   const soireePlayers = useMemo(() => {
     return uniq([...currentSoiree.pools.A, ...currentSoiree.pools.B].map(normName)).filter(isNonEmptyString);
@@ -1612,6 +1658,20 @@ export default function App() {
     };
   }, [currentSoiree.matches, soireeAttendance, soireePlayers]);
 
+  useEffect(() => {
+    if (!queuedAutoAdvanceFromMatchId) return;
+    if (readOnlyMode || currentSoireeLocked || !flowAutoAdvance) {
+      setQueuedAutoAdvanceFromMatchId("");
+      return;
+    }
+    const next = liveSchedule.nextMatch;
+    if (next && next.id !== queuedAutoAdvanceFromMatchId) {
+      launchFlowMatch(next.id);
+    }
+    setQueuedAutoAdvanceFromMatchId("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queuedAutoAdvanceFromMatchId, liveSchedule.nextMatch, readOnlyMode, currentSoireeLocked, flowAutoAdvance]);
+
   const soireeTiming = useMemo(() => {
     const startedAt =
       currentSoiree.startedAt ??
@@ -1708,6 +1768,11 @@ export default function App() {
       .sort((a: CoreMatch, b: CoreMatch) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0];
     return running ?? liveSchedule.nextMatch ?? null;
   }, [currentSoiree.matches, liveSchedule.nextMatch]);
+
+  const flowCurrentMatch = useMemo(() => {
+    if (!flowMatchId) return null;
+    return currentSoiree.matches.find((m: CoreMatch) => m.id === flowMatchId) ?? null;
+  }, [flowMatchId, currentSoiree.matches]);
 
 
   const currentPoolStandings = useMemo(() => {
@@ -2631,6 +2696,29 @@ export default function App() {
     });
   }
 
+  function focusMatchInPlanning(matchId: string) {
+    window.setTimeout(() => {
+      const el = document.querySelector(`[data-match-id="${matchId}"]`) as HTMLElement | null;
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 80);
+  }
+
+  function launchFlowMatch(matchId: string) {
+    if (readOnlyMode || currentSoireeLocked) return;
+    startMatchTimer(matchId);
+    setFlowMatchId(matchId);
+    focusMatchInPlanning(matchId);
+  }
+
+  function launchNextRecommendedMatch() {
+    if (readOnlyMode || currentSoireeLocked) return;
+    const next = liveSchedule.nextMatch;
+    if (!next) return;
+    launchFlowMatch(next.id);
+    logAudit("Flow soirée", `Lancement match #${next.order}`);
+  }
+
   function startSoireeTimer() {
     if (currentSoireeLocked) return;
     const now = Date.now();
@@ -2819,6 +2907,9 @@ export default function App() {
   function setMatchWinner(matchId: string, winner: string) {
     if (currentSoireeLocked) return;
     const now = Date.now();
+    const chosen = normName(winner);
+    const target = currentSoiree.matches.find((m: CoreMatch) => m.id === matchId);
+    const isValidChoice = Boolean(target && chosen && (chosen === normName(target.a) || chosen === normName(target.b)));
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -2846,6 +2937,11 @@ export default function App() {
       });
       return { ...season, soirees };
     });
+    if (isValidChoice && flowAutoAdvance) {
+      setQueuedAutoAdvanceFromMatchId(matchId);
+    } else if (!isValidChoice && flowMatchId === matchId) {
+      setFlowMatchId("");
+    }
   }
 
   function setMatchStatus(matchId: string, status: MatchStatus) {
@@ -3122,6 +3218,34 @@ export default function App() {
     out.sort((a: { player: string; eur: number }, b: { player: string; eur: number }) => b.eur - a.eur || a.player.localeCompare(b.player));
     return out;
   }, [currentSeason.players, currentSeason.soirees, effectiveRules]);
+
+  const closureSoireePodium = useMemo(() => {
+    if (!closureSoiree) return null;
+    return computeSoireePodium(closureSoiree, closureSeason, effectiveRules);
+  }, [closureSoiree, closureSeason, effectiveRules]);
+
+  const closureSoireeRankingRows = useMemo(() => {
+    if (!closureSoiree) return [];
+    return computeSoireeRankingRows(closureSoiree, closureSeason, effectiveRules);
+  }, [closureSoiree, closureSeason, effectiveRules]);
+
+  useEffect(() => {
+    if (readOnlyMode) return;
+    if (!showSoireeClosureModal || !closureSoiree) return;
+    if (closureAutoExportDoneRef.current === closureSoiree.id) return;
+
+    const text = buildSoireeSummaryText(closureSoiree);
+    const filename = `resume_soiree_${closureSoiree.number}_auto.txt`;
+    try {
+      downloadTextFile(filename, text, "text/plain;charset=utf-8");
+      setClosureAutoExportStatus(`Auto-export effectué: ${filename}`);
+      logAudit("Auto-export fin de soirée", `S${closureSoiree.number}`);
+    } catch {
+      setClosureAutoExportStatus("Auto-export bloqué par le navigateur. Utilise les boutons d'export ci-dessous.");
+    }
+    closureAutoExportDoneRef.current = closureSoiree.id;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSoireeClosureModal, closureSoiree, readOnlyMode]);
 
   const rankingTimeline = useMemo(() => {
     const players = currentSeason.players;
@@ -3480,11 +3604,11 @@ export default function App() {
                       };
                       const cardClass = `${winner ? "winner-anim" : ""} ${
                         liveSchedule.nextMatch?.id === m.id ? "ring-1 ring-emerald-400/60" : ""
-                      }`;
+                      } ${flowMatchId === m.id ? "ring-2 ring-cyan-300/80 shadow-[0_0_24px_rgba(34,211,238,0.35)]" : ""}`;
 
                       if (compactMode) {
                         return (
-                          <div key={m.id} className={`rounded-2xl border border-white/10 bg-black/30 p-3 ${cardClass}`}>
+                          <div key={m.id} data-match-id={m.id} className={`rounded-2xl border border-white/10 bg-black/30 p-3 ${cardClass}`}>
                             <div className="flex items-center justify-between text-xs text-white/60">
                               <div>#{m.order}</div>
                               <div className="flex items-center gap-2">
@@ -3555,7 +3679,7 @@ export default function App() {
                       }
 
                       return (
-                        <div key={m.id} className={`rounded-2xl border border-white/10 bg-black/30 p-3 ${cardClass}`}>
+                        <div key={m.id} data-match-id={m.id} className={`rounded-2xl border border-white/10 bg-black/30 p-3 ${cardClass}`}>
                           <div className="flex items-center justify-between text-xs text-white/60">
                             <div>Match #{m.order}</div>
                             <div className="flex items-center gap-2">
@@ -3656,10 +3780,10 @@ export default function App() {
                           const matchDurationLabel = m.startedAt ? formatDuration(matchDurationMs) : "—";
                           const rowClass = `${winner ? "winner-row" : ""} ${
                             liveSchedule.nextMatch?.id === m.id ? "bg-emerald-500/10" : ""
-                          }`;
+                          } ${flowMatchId === m.id ? "bg-cyan-500/10 ring-1 ring-cyan-300/50" : ""}`;
 
                           return (
-                            <tr key={m.id} className={`border-t border-white/10 ${rowClass}`}>
+                            <tr key={m.id} data-match-id={m.id} className={`border-t border-white/10 ${rowClass}`}>
                               <td className="py-2 pr-2 text-white/70">{m.order}</td>
                               <td className="py-2 pr-2">
                                 <Pill>{m.phase}</Pill>
@@ -3972,6 +4096,37 @@ export default function App() {
                   <Pill color="#22c55e">Présents: {soireePlayers.filter((p) => soireeAttendance.get(p) === "HERE").length}</Pill>
                   <Pill color="#f59e0b">Retard: {liveSchedule.latePlayers.length}</Pill>
                   <Pill color="#ef4444">Absents: {liveSchedule.absentPlayers.length}</Pill>
+                </div>
+
+                <div className="mb-3 rounded-xl border border-cyan-400/25 bg-cyan-500/10 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm font-semibold text-cyan-200">Flow soirée</div>
+                    <label className="inline-flex items-center gap-2 text-xs text-cyan-100">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-white/20 bg-black"
+                        checked={flowAutoAdvance}
+                        disabled={readOnlyMode || currentSoireeLocked}
+                        onChange={(e) => setFlowAutoAdvance(e.target.checked)}
+                      />
+                      Auto-match suivant
+                    </label>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button variant="ghost" onClick={() => launchNextRecommendedMatch()} disabled={!liveSchedule.nextMatch || readOnlyMode || currentSoireeLocked}>
+                      Lancer prochain match
+                    </Button>
+                    {flowCurrentMatch && (
+                      <Button variant="ghost" onClick={() => focusMatchInPlanning(flowCurrentMatch.id)}>
+                        Recentrer match en cours
+                      </Button>
+                    )}
+                  </div>
+                  <div className="mt-2 text-xs text-cyan-100/90">
+                    {flowCurrentMatch
+                      ? `En cours: #${flowCurrentMatch.order} — ${flowCurrentMatch.a} vs ${flowCurrentMatch.b}`
+                      : "Aucun match flow actif. Lance le prochain match recommandé."}
+                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -5772,7 +5927,7 @@ export default function App() {
               <div className="flex items-center justify-between gap-2">
                 <div>
                   <h3 className="text-base font-semibold">Soirée {closureSoiree.number} terminée</h3>
-                  <div className="text-xs text-white/60">Clôture automatique détectée, actions de fin de soirée.</div>
+                  <div className="text-xs text-white/60">Clôture automatique détectée ({closureSeason.name}).</div>
                 </div>
                 <Pill color="#22c55e">Fin détectée</Pill>
               </div>
@@ -5793,6 +5948,54 @@ export default function App() {
                   <div className="mt-1 text-xl font-extrabold">{closureSoiree.rebuys.length}</div>
                 </div>
               </div>
+
+              <div className="mt-3 rounded-xl border border-white/10 bg-black/30 p-3">
+                <div className="text-xs text-white/60">Podium de la soirée</div>
+                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  {[
+                    { rank: 2, label: "2e", player: closureSoireePodium?.second ?? "", gain: MONEY.podiumEUR.second },
+                    { rank: 1, label: "1er", player: closureSoireePodium?.first ?? "", gain: MONEY.podiumEUR.first },
+                    { rank: 3, label: "3e", player: closureSoireePodium?.third ?? "", gain: MONEY.podiumEUR.third },
+                  ].map((slot) => (
+                    <div
+                      key={slot.rank}
+                      className={`rounded-xl border px-3 py-3 ${slot.rank === 1 ? "border-emerald-300/40 bg-emerald-500/15" : "border-white/10 bg-black/20"}`}
+                    >
+                      <div className="text-xs text-white/70">
+                        #{slot.rank} • {slot.label}
+                      </div>
+                      <div className="mt-1 text-base font-semibold">{slot.player || "—"}</div>
+                      <div className="mt-1 text-xs text-white/60">{formatEUR(slot.gain)}</div>
+                    </div>
+                  ))}
+                </div>
+                {closureSoireePodium?.provisional && (
+                  <div className="mt-2 text-[11px] text-white/50">
+                    Podium provisoire (finale / petite finale incomplètes).
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-3 rounded-xl border border-white/10 bg-black/30 p-3">
+                <div className="text-xs text-white/60">Récap classement soirée</div>
+                <div className="mt-2 max-h-44 space-y-1 overflow-y-auto pr-1 text-sm">
+                  {closureSoireeRankingRows.map((row, idx) => (
+                    <div key={row.name} className="flex items-center justify-between rounded-lg bg-black/20 px-2 py-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-white/50 w-5">{idx + 1}.</span>
+                        <span className="font-semibold">{row.name}</span>
+                      </div>
+                      <div className="text-xs text-white/70">{row.pts} pts • {row.wins} V • {row.bonus} bonus</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {closureAutoExportStatus && (
+                <div className="mt-3 rounded-xl border border-cyan-400/25 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
+                  {closureAutoExportStatus}
+                </div>
+              )}
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <Button variant="ghost" onClick={() => exportSoireeSummaryText(closureSoiree)}>
