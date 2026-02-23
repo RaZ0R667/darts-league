@@ -1218,6 +1218,7 @@ export default function App() {
   const [importText, setImportText] = useState("");
   const [showExport, setShowExport] = useState(false);
   const [exportText, setExportText] = useState("");
+  const [logoLoadError, setLogoLoadError] = useState(false);
   const [rulesPdfData, setRulesPdfData] = useState<string>(() => {
     try {
       return localStorage.getItem(RULES_PDF_DATA_KEY) ?? "";
@@ -3185,7 +3186,17 @@ export default function App() {
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div className="flex-1">
             <div className="flex items-center gap-3">
-              <div className="h-11 w-11 rounded-2xl bg-white/10 grid place-items-center shadow-[0_0_30px_rgba(59,130,246,0.25)]">🎯</div>
+              <div className={`dl-logo-3d ${tvMode ? "is-tv" : ""} ${logoLoadError ? "is-fallback" : "has-image"}`}>
+                {!logoLoadError && (
+                  <img
+                    src="/dl-logo.png"
+                    alt="Darts League logo"
+                    className="dl-logo-3d-img"
+                    onError={() => setLogoLoadError(true)}
+                  />
+                )}
+                <div className="dl-logo-3d-fallback">DL</div>
+              </div>
               <div>
                 <div className="text-[11px] uppercase tracking-[0.3em] text-white/50">Darts League</div>
                 <h1 className="text-2xl font-extrabold">Tableau de bord</h1>

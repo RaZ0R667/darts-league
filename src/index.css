@@ -34,6 +34,88 @@ body {
   font-family: "Syne", "Space Grotesk", sans-serif;
 }
 
+.dl-logo-3d {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  position: relative;
+  display: grid;
+  place-items: center;
+  transform-style: preserve-3d;
+  perspective: 900px;
+  background: linear-gradient(155deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 0 24px rgba(239, 68, 68, 0.22), 0 0 38px rgba(59, 130, 246, 0.16);
+  overflow: hidden;
+}
+
+.dl-logo-3d.is-tv {
+  width: 60px;
+  height: 60px;
+}
+
+.dl-logo-3d-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: translateZ(14px);
+  animation: dl3dSpin 8.5s linear infinite, dl3dFloat 2.6s ease-in-out infinite;
+  filter: saturate(1.08) contrast(1.06);
+}
+
+.dl-logo-3d-fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: "Syne", "Space Grotesk", sans-serif;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #e5e7eb;
+  background:
+    radial-gradient(120% 70% at 50% 0%, rgba(239, 68, 68, 0.28), transparent 70%),
+    linear-gradient(150deg, rgba(15, 23, 42, 0.9), rgba(2, 6, 23, 0.98));
+}
+
+.dl-logo-3d.has-image .dl-logo-3d-fallback {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dl-logo-3d::after {
+  content: "";
+  position: absolute;
+  inset: -12%;
+  pointer-events: none;
+  border-radius: 16px;
+  background: conic-gradient(from 0deg, rgba(239, 68, 68, 0.18), transparent 35%, rgba(59, 130, 246, 0.24), transparent 70%, rgba(234, 179, 8, 0.18));
+  animation: dlRing 3.8s linear infinite;
+  mix-blend-mode: screen;
+}
+
+@keyframes dl3dSpin {
+  0% { transform: translateZ(14px) rotateY(0deg) rotateX(4deg); }
+  100% { transform: translateZ(14px) rotateY(360deg) rotateX(4deg); }
+}
+
+@keyframes dl3dFloat {
+  0%, 100% { transform: translateZ(14px) rotateY(0deg) rotateX(4deg) translateY(0); }
+  50% { transform: translateZ(14px) rotateY(180deg) rotateX(4deg) translateY(-1px); }
+}
+
+@keyframes dlRing {
+  0% { transform: rotate(0deg); opacity: 0.22; }
+  50% { opacity: 0.38; }
+  100% { transform: rotate(360deg); opacity: 0.22; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dl-logo-3d-img,
+  .dl-logo-3d::after {
+    animation: none;
+  }
+}
+
 .tv-mode {
   font-size: 1.05rem;
 }
