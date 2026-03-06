@@ -295,3 +295,107 @@ body {
   20% { opacity: 1; }
   100% { opacity: 0; transform: translateY(80px) rotate(12deg); }
 }
+
+.final-night-shell {
+  background:
+    radial-gradient(950px 520px at 50% -14%, rgba(239, 68, 68, 0.22), transparent 58%),
+    radial-gradient(900px 500px at 12% 4%, rgba(236, 72, 153, 0.2), transparent 60%),
+    radial-gradient(900px 500px at 86% 104%, rgba(234, 179, 8, 0.2), transparent 62%),
+    radial-gradient(900px 500px at 40% 115%, rgba(59, 130, 246, 0.14), transparent 60%);
+}
+
+.final-night-banner {
+  position: relative;
+  overflow: hidden;
+}
+
+.final-night-banner::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(108deg, transparent 12%, rgba(244, 114, 182, 0.24) 34%, rgba(251, 191, 36, 0.16) 52%, transparent 72%);
+  transform: translateX(-130%);
+  animation: finalNightSweep 4.2s ease-in-out infinite;
+}
+
+.final-night-burst {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(248, 113, 113, 0.28), transparent 28%),
+    radial-gradient(circle at 20% 25%, rgba(251, 191, 36, 0.22), transparent 30%),
+    radial-gradient(circle at 80% 24%, rgba(236, 72, 153, 0.2), transparent 30%),
+    radial-gradient(circle at 50% 70%, rgba(59, 130, 246, 0.2), transparent 34%);
+  animation: finalNightBurst 2.4s ease forwards;
+}
+
+.final-night-burst::before,
+.final-night-burst::after {
+  content: "";
+  position: absolute;
+  inset: -35%;
+  border-radius: 50%;
+  mix-blend-mode: screen;
+}
+
+.final-night-burst::before {
+  background:
+    conic-gradient(from 0deg, rgba(248, 113, 113, 0.65), transparent 18%, rgba(251, 191, 36, 0.6), transparent 38%, rgba(236, 72, 153, 0.65), transparent 58%, rgba(56, 189, 248, 0.6), transparent 78%, rgba(248, 113, 113, 0.65));
+  animation: finalNightSpin 1.8s linear 1;
+}
+
+.final-night-burst::after {
+  background:
+    radial-gradient(circle, rgba(255, 255, 255, 0.62) 0 2px, transparent 3px),
+    radial-gradient(circle, rgba(251, 191, 36, 0.62) 0 2px, transparent 3px),
+    radial-gradient(circle, rgba(244, 114, 182, 0.62) 0 2px, transparent 3px),
+    radial-gradient(circle, rgba(56, 189, 248, 0.58) 0 2px, transparent 3px);
+  background-size: 18px 18px, 22px 22px, 20px 20px, 16px 16px;
+  animation: finalNightSpark 2.1s ease-out 1;
+}
+
+.final-night-burst-title {
+  font-family: "Syne", "Space Grotesk", sans-serif;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  font-size: clamp(1.6rem, 4vw, 3.2rem);
+  color: rgba(255, 255, 255, 0.95);
+  text-shadow: 0 0 16px rgba(248, 113, 113, 0.9), 0 0 34px rgba(251, 191, 36, 0.56);
+  animation: finalNightTitle 2.2s ease-out 1;
+}
+
+@keyframes finalNightSweep {
+  0% { transform: translateX(-130%); opacity: 0; }
+  22% { opacity: 0.7; }
+  45% { opacity: 0.85; }
+  100% { transform: translateX(135%); opacity: 0; }
+}
+
+@keyframes finalNightBurst {
+  0% { opacity: 0; }
+  16% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes finalNightSpin {
+  0% { transform: scale(0.6) rotate(0deg); opacity: 0; }
+  25% { opacity: 0.92; }
+  100% { transform: scale(1.28) rotate(360deg); opacity: 0; }
+}
+
+@keyframes finalNightSpark {
+  0% { opacity: 0; transform: scale(0.6) translateY(0); }
+  22% { opacity: 1; }
+  100% { opacity: 0; transform: scale(1.2) translateY(60px); }
+}
+
+@keyframes finalNightTitle {
+  0% { opacity: 0; transform: scale(0.9) translateY(18px); }
+  22% { opacity: 1; transform: scale(1.04) translateY(0); }
+  100% { opacity: 0; transform: scale(1) translateY(-12px); }
+}

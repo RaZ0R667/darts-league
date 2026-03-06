@@ -162,6 +162,9 @@ const FUN_RULES: RulesConfig = {
   rebuyEUR: 0,
 };
 
+const FINAL_NIGHT_SOIREE_NUMBER = 6;
+const FINAL_NIGHT_PODIUM_POINTS = { first: 3, second: 2, third: 1 } as const;
+
 type SnapshotEntry = {
   id: string;
   ts: number;
@@ -360,6 +363,59 @@ function isFairSoireeMode(soiree: Soiree) {
   return (soiree.absentPlayers?.length ?? 0) > 0;
 }
 
+function isFinalNightSoireeNumber(n?: number) {
+  return Number(n ?? 0) === FINAL_NIGHT_SOIREE_NUMBER;
+}
+
+function isFinalNightSoiree(soiree?: Soiree | null) {
+  return Boolean(soiree && isFinalNightSoireeNumber(soiree.number));
+}
+
+function hasKnockoutStarted(soiree: Soiree) {
+  return soiree.matches.some((m: CoreMatch) => {
+    if (m.phase === "POULE") return false;
+    return Boolean((normName(m.a) && normName(m.b)) || normName(m.winner));
+  });
+}
+
+function getMatchWinPointsForSoiree(match: CoreMatch, soireeNumber: number, rules: RulesConfig) {
+  const base = match.phase === "PFINAL" ? rules.smallFinalPoints : rules.winPoints;
+  return isFinalNightSoireeNumber(soireeNumber) ? base * 2 : base;
+}
+
+function getCheckoutBonusForMatch(match: CoreMatch, soireeNumber: number, rules: RulesConfig) {
+  if (!match.checkoutBy) return 0;
+  if (!isFinalNightSoireeNumber(soireeNumber)) return rules.checkoutBonusPoints;
+  if (match.phase === "FINAL") return 3;
+  return rules.checkoutBonusPoints * 2;
+}
+
+function computeFinalNightPodiumPoints(matches: CoreMatch[]) {
+  const pts = new Map<string, number>();
+  const add = (name: string, value: number) => {
+    const n = normName(name);
+    if (!n) return;
+    pts.set(n, (pts.get(n) ?? 0) + value);
+  };
+
+  const final = matches.find((m: CoreMatch) => m.phase === "FINAL");
+  const pfinal = matches.find((m: CoreMatch) => m.phase === "PFINAL");
+  const first = normName(final?.winner ?? "");
+  const second =
+    first && first === normName(final?.a ?? "")
+      ? normName(final?.b ?? "")
+      : first && first === normName(final?.b ?? "")
+        ? normName(final?.a ?? "")
+        : "";
+  const third = normName(pfinal?.winner ?? "");
+  if (!first || !second || !third) return pts;
+
+  add(first, FINAL_NIGHT_PODIUM_POINTS.first);
+  add(second, FINAL_NIGHT_PODIUM_POINTS.second);
+  add(third, FINAL_NIGHT_PODIUM_POINTS.third);
+  return pts;
+}
+
 function computePoolRows(
   soiree: Soiree,
   pool: "A" | "B",
@@ -478,17 +534,17 @@ function computePointsFromMatches(
   for (const m of matches) {
     const w = normName(m.winner);
     if (w) {
-      const basePts = m.phase === "PFINAL" ? rules.smallFinalPoints : rules.winPoints;
+      const basePts = getMatchWinPointsForSoiree(m, Number(seasonSoireeNumber ?? 0), rules);
       add(pts, w, basePts);
       add(wins, w, 1);
     }
 
     if (m.checkoutBy === "A" && normName(m.a)) {
       add(bonus, normName(m.a), 1);
-      add(pts, normName(m.a), rules.checkoutBonusPoints);
+      add(pts, normName(m.a), getCheckoutBonusForMatch(m, Number(seasonSoireeNumber ?? 0), rules));
     } else if (m.checkoutBy === "B" && normName(m.b)) {
       add(bonus, normName(m.b), 1);
-      add(pts, normName(m.b), rules.checkoutBonusPoints);
+      add(pts, normName(m.b), getCheckoutBonusForMatch(m, Number(seasonSoireeNumber ?? 0), rules));
     }
   }
 
@@ -541,6 +597,11 @@ function computePointsFromMatches(
     }
 
     incLocalDone(buyer);
+  }
+
+  if (isFinalNightSoireeNumber(soN)) {
+    const podiumPts = computeFinalNightPodiumPoints(matches);
+    for (const [name, value] of podiumPts.entries()) add(pts, name, value);
   }
 
   return { pts, wins, bonus };
@@ -1290,6 +1351,7 @@ export default function App() {
   const [showSoireeClosureModal, setShowSoireeClosureModal] = useState(false);
   const [closureSoireeId, setClosureSoireeId] = useState("");
   const [closureAutoExportStatus, setClosureAutoExportStatus] = useState("");
+  const [showFinalNightBurst, setShowFinalNightBurst] = useState(false);
   const [flowAutoAdvance, setFlowAutoAdvance] = useState(true);
   const [flowMatchId, setFlowMatchId] = useState("");
   const [queuedAutoAdvanceFromMatchId, setQueuedAutoAdvanceFromMatchId] = useState("");
@@ -1316,6 +1378,7 @@ export default function App() {
   const lastAutoSnapshotAtRef = useRef(0);
   const skipNextCloudPushRef = useRef(false);
   const closureAutoExportDoneRef = useRef<string>("");
+  const finalNightBurstKeyRef = useRef("");
 
   const currentSeason = useMemo<Season>(() => {
     return currentSeasons.find((s: Season) => s.id === state.activeSeasonId) ?? currentSeasons[0];
@@ -1504,6 +1567,8 @@ export default function App() {
   const closureSeason = closureContext?.season ?? currentSeason;
   const currentSoireeLocked = Boolean(currentSoiree?.locked);
   const fairSoireeMode = useMemo(() => isFairSoireeMode(currentSoiree), [currentSoiree]);
+  const finalNightMode = useMemo(() => isFinalNightSoiree(currentSoiree), [currentSoiree]);
+  const rebuyLockedByPhase = useMemo(() => hasKnockoutStarted(currentSoiree), [currentSoiree]);
 
   useEffect(() => {
     if (readOnlyMode) return;
@@ -1534,6 +1599,21 @@ export default function App() {
     setFlowMatchId("");
     setQueuedAutoAdvanceFromMatchId("");
   }, [currentSoiree.id]);
+
+  useEffect(() => {
+    if (tab !== "SOIREE" || !finalNightMode) return;
+    const key = `${currentSeason.id}:${currentSoiree.id}:${tab}`;
+    if (finalNightBurstKeyRef.current === key) return;
+    finalNightBurstKeyRef.current = key;
+    setShowFinalNightBurst(true);
+    const t = window.setTimeout(() => setShowFinalNightBurst(false), 2400);
+    return () => window.clearTimeout(t);
+  }, [tab, finalNightMode, currentSeason.id, currentSoiree.id]);
+
+  useEffect(() => {
+    if (tab === "SOIREE" && finalNightMode) return;
+    setShowFinalNightBurst(false);
+  }, [tab, finalNightMode]);
 
   const soireePlayers = useMemo(() => {
     return uniq([...currentSoiree.pools.A, ...currentSoiree.pools.B].map(normName)).filter(isNonEmptyString);
@@ -3100,6 +3180,10 @@ export default function App() {
 
   function addRebuy() {
     if (currentSoireeLocked) return;
+    if (finalNightMode && rebuyLockedByPhase) {
+      alert("Mode Final: les re-buys sont fermés dès le début des phases finales.");
+      return;
+    }
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -3305,7 +3389,16 @@ export default function App() {
 
 
   return (
-    <div className={`min-h-screen text-white app-shell ${tvMode ? `tv-mode tv-scene-${tvScene.toLowerCase()}` : ""}`}>
+    <div
+      className={`min-h-screen text-white app-shell ${tvMode ? `tv-mode tv-scene-${tvScene.toLowerCase()}` : ""} ${
+        tab === "SOIREE" && finalNightMode ? "final-night-shell" : ""
+      }`}
+    >
+      {showFinalNightBurst && tab === "SOIREE" && finalNightMode && (
+        <div className="final-night-burst" aria-hidden="true">
+          <div className="final-night-burst-title">FINAL NIGHT</div>
+        </div>
+      )}
       <div className="mx-auto max-w-6xl px-4 pt-6 pb-24 md:pb-6">
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div className="flex-1">
@@ -3334,6 +3427,7 @@ export default function App() {
               {readOnlyMode && <Pill color="#eab308">Lecture seule</Pill>}
               {tvMode && <Pill color="#38bdf8">MODE TV</Pill>}
               {tvMode && <Pill>Écran: {tvLabels[tab] ?? tab}</Pill>}
+              {tab === "SOIREE" && finalNightMode && <Pill color="#f97316">Finale Saison • Soirée {FINAL_NIGHT_SOIREE_NUMBER}</Pill>}
             </div>
           </div>
 
@@ -3565,6 +3659,20 @@ export default function App() {
                 Soirée verrouillée: les résultats/matchs sont figés. Tu peux la déverrouiller depuis la popup de fin de soirée.
               </div>
             )}
+            {finalNightMode && (
+              <div className="lg:col-span-3 final-night-banner rounded-2xl border border-fuchsia-300/30 bg-black/40 px-4 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-[0.28em] text-fuchsia-200/80">Mode Final</div>
+                    <div className="text-lg font-extrabold">Soirée {FINAL_NIGHT_SOIREE_NUMBER} — points doublés sur les matchs</div>
+                    <div className="text-xs text-white/70">
+                      Re-buys illimités en poules, fermés en phases finales • Bonus checkout finale: +3 • Podium points: 3/2/1
+                    </div>
+                  </div>
+                  <Pill color="#f97316">Jackpot final boost</Pill>
+                </div>
+              </div>
+            )}
             <div className="lg:col-span-2">
               <Section
                 title={`Planning — Soirée ${currentSoiree.number}`}
@@ -3591,9 +3699,10 @@ export default function App() {
                     .sort((a: CoreMatch, b: CoreMatch) => a.order - b.order)
                     .map((m: CoreMatch) => {
                       const winner = normName(m.winner);
-                      const bonusA = m.checkoutBy === "A" ? effectiveRules.checkoutBonusPoints : 0;
-                      const bonusB = m.checkoutBy === "B" ? effectiveRules.checkoutBonusPoints : 0;
-                      const basePts = m.phase === "PFINAL" ? effectiveRules.smallFinalPoints : effectiveRules.winPoints;
+                      const checkoutPts = getCheckoutBonusForMatch(m, currentSoiree.number, effectiveRules);
+                      const bonusA = m.checkoutBy === "A" ? checkoutPts : 0;
+                      const bonusB = m.checkoutBy === "B" ? checkoutPts : 0;
+                      const basePts = getMatchWinPointsForSoiree(m, currentSoiree.number, effectiveRules);
                       const ptsA = (winner && winner === m.a ? basePts : 0) + bonusA;
                       const ptsB = (winner && winner === m.b ? basePts : 0) + bonusB;
                       const matchDurationMs = getMatchDurationMs(m, clockNow);
@@ -3661,7 +3770,7 @@ export default function App() {
                                   value={m.checkoutBy}
                                   onChange={(v) => setMatchCheckoutBy(m.id, (v as "" | "A" | "B"))}
                                   options={["A", "B"]}
-                                  placeholder="Checkout ≥100 par…"
+                                  placeholder="Checkout bonus (100+/Cricket) par…"
                                   disabled={!m.a || !m.b || readOnlyMode || currentSoireeLocked}
                                 />
                               </div>
@@ -3731,7 +3840,7 @@ export default function App() {
                               value={m.checkoutBy}
                               onChange={(v) => setMatchCheckoutBy(m.id, (v as "" | "A" | "B"))}
                               options={["A", "B"]}
-                              placeholder="Checkout ≥100 par…"
+                              placeholder="Checkout bonus (100+/Cricket) par…"
                               disabled={!m.a || !m.b || readOnlyMode || currentSoireeLocked}
                             />
                           </div>
@@ -3760,7 +3869,7 @@ export default function App() {
                         <th className="py-2 pr-2">B</th>
                         <th className="py-2 pr-2">Vainqueur</th>
                         <th className="py-2 pr-2">Chrono</th>
-                        <th className="py-2 pr-2">Checkout ≥100 par</th>
+                        <th className="py-2 pr-2">Checkout bonus (100+/Cricket)</th>
                         <th className="py-2 pr-2">Points A</th>
                         <th className="py-2 pr-2">Points B</th>
                       </tr>
@@ -3771,9 +3880,10 @@ export default function App() {
                         .sort((a: CoreMatch, b: CoreMatch) => a.order - b.order)
                         .map((m: CoreMatch) => {
                           const winner = normName(m.winner);
-                          const bonusA = m.checkoutBy === "A" ? effectiveRules.checkoutBonusPoints : 0;
-                          const bonusB = m.checkoutBy === "B" ? effectiveRules.checkoutBonusPoints : 0;
-                          const basePts = m.phase === "PFINAL" ? effectiveRules.smallFinalPoints : effectiveRules.winPoints;
+                          const checkoutPts = getCheckoutBonusForMatch(m, currentSoiree.number, effectiveRules);
+                          const bonusA = m.checkoutBy === "A" ? checkoutPts : 0;
+                          const bonusB = m.checkoutBy === "B" ? checkoutPts : 0;
+                          const basePts = getMatchWinPointsForSoiree(m, currentSoiree.number, effectiveRules);
                           const ptsA = (winner && winner === m.a ? basePts : 0) + bonusA;
                           const ptsB = (winner && winner === m.b ? basePts : 0) + bonusB;
                           const matchDurationMs = getMatchDurationMs(m, clockNow);
@@ -3833,7 +3943,7 @@ export default function App() {
                                   value={m.checkoutBy}
                                   onChange={(v) => setMatchCheckoutBy(m.id, (v as "" | "A" | "B"))}
                                   options={["A", "B"]}
-                                  placeholder="Checkout ≥100 par…"
+                                  placeholder="Checkout bonus (100+/Cricket) par…"
                                   disabled={!m.a || !m.b || readOnlyMode || currentSoireeLocked}
                                 />
                               </td>
@@ -4055,6 +4165,11 @@ export default function App() {
 
               <Section title="Podium & gains (soirée)">
                 <div className="space-y-2 text-sm">
+                  {finalNightMode && (
+                    <div className="rounded-xl border border-fuchsia-400/25 bg-fuchsia-500/10 px-3 py-2 text-xs text-fuchsia-100">
+                      Bonus classement Mode Final: podium = +{FINAL_NIGHT_PODIUM_POINTS.first} / +{FINAL_NIGHT_PODIUM_POINTS.second} / +{FINAL_NIGHT_PODIUM_POINTS.third} points.
+                    </div>
+                  )}
                   <div className="flex items-center justify-between">
                     <div className="text-white/70">🥇 1er</div>
                     <div className="font-semibold">
@@ -4601,11 +4716,20 @@ export default function App() {
               <Section
                 title={`Re-buys — Soirée ${currentSoiree.number}`}
                 right={
-                  <Button variant="ghost" onClick={() => addRebuy()} disabled={readOnlyMode || currentSoireeLocked}>
+                  <Button
+                    variant="ghost"
+                    onClick={() => addRebuy()}
+                    disabled={readOnlyMode || currentSoireeLocked || (finalNightMode && rebuyLockedByPhase)}
+                  >
                     + Ajouter un re-buy
                   </Button>
                 }
               >
+                {finalNightMode && (
+                  <div className="mb-3 rounded-xl border border-fuchsia-400/25 bg-fuchsia-500/10 p-3 text-xs text-fuchsia-100">
+                    Mode Final Soirée {FINAL_NIGHT_SOIREE_NUMBER}: re-buys illimités pendant les poules, puis verrouillés dès que les phases finales démarrent.
+                  </div>
+                )}
                 {currentSoiree.rebuys.length === 0 ? (
                   <div className="text-sm text-white/70">Aucun re-buy pour cette soirée.</div>
                 ) : (
@@ -4734,6 +4858,14 @@ export default function App() {
                   <div className="ml-6">• 1er re-buy de la saison gagné : +{effectiveRules.rebuyFirstWinPointsS3Plus} pts</div>
                   <div className="ml-6">• re-buys suivants gagnés : +{effectiveRules.rebuyNextWinPointsS3Plus} pt</div>
                   <div className="ml-3">— s’il perd : 0 pt pour tous</div>
+                  {finalNightMode && (
+                    <>
+                      <div className="mt-2">• Spécial finale (S{FINAL_NIGHT_SOIREE_NUMBER}) :</div>
+                      <div className="ml-3">— Re-buys illimités en poules, fermés en phases finales</div>
+                      <div className="ml-3">— Points re-buy non doublés</div>
+                      <div className="ml-3">— 100% des re-buys vont dans le jackpot final</div>
+                    </>
+                  )}
                   <div className="mt-2 text-xs text-white/60">⚠️ Le re-buy ne qualifie jamais pour les phases finales.</div>
                 </div>
               </Section>
