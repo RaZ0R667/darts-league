@@ -1429,6 +1429,73 @@ function formatEUR(n: number) {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(v);
 }
 
+function AnimatedMetric({
+  value,
+  kind = "int",
+  durationMs = 650,
+  className,
+}: {
+  value: number;
+  kind?: "int" | "eur";
+  durationMs?: number;
+  className?: string;
+}) {
+  const [display, setDisplay] = useState<number>(Number.isFinite(value) ? value : 0);
+  const previousRef = useRef<number>(Number.isFinite(value) ? value : 0);
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const to = Number.isFinite(value) ? value : 0;
+    const from = Number.isFinite(previousRef.current) ? previousRef.current : 0;
+    if (Math.abs(to - from) < 0.0001) {
+      setDisplay(to);
+      previousRef.current = to;
+      return;
+    }
+    const reduceMotion =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion || durationMs <= 0) {
+      setDisplay(to);
+      previousRef.current = to;
+      return;
+    }
+
+    const start = performance.now();
+    const delta = to - from;
+    if (rafRef.current) window.cancelAnimationFrame(rafRef.current);
+
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / durationMs);
+      const eased = 1 - Math.pow(1 - t, 3);
+      const next = from + delta * eased;
+      setDisplay(next);
+      if (t < 1) {
+        rafRef.current = window.requestAnimationFrame(tick);
+      } else {
+        previousRef.current = to;
+        rafRef.current = null;
+      }
+    };
+
+    rafRef.current = window.requestAnimationFrame(tick);
+    return () => {
+      if (rafRef.current) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [value, durationMs]);
+
+  const rendered =
+    kind === "eur"
+      ? formatEUR(display)
+      : new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(Math.round(display));
+
+  return <span className={`tabular-nums ${className ?? ""}`}>{rendered}</span>;
+}
+
 function formatDuration(ms: number) {
   const safe = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(safe / 3600);
@@ -1683,6 +1750,7 @@ export default function App() {
   const [funLiveIndex, setFunLiveIndex] = useState(0);
   const [tvOverlayIndex, setTvOverlayIndex] = useState(0);
   const [tvSceneFlash, setTvSceneFlash] = useState<TvScene | "">("");
+  const [winnerFxMatchId, setWinnerFxMatchId] = useState("");
   const currentSeasons: Season[] = state.seasons;
   const [selectedSoireeNumber, setSelectedSoireeNumber] = useState<number>(() => {
     const max = Math.max(...currentSeasons[0].soirees.map((s: Soiree) => s.number));
@@ -1700,6 +1768,7 @@ export default function App() {
   const finalNightBurstKeyRef = useRef("");
   const smartConfirmMemoryRef = useRef<Record<string, number>>({});
   const previousTvSceneRef = useRef<TvScene | null>(null);
+  const winnerFxTimerRef = useRef<number | null>(null);
 
   const currentSeason = useMemo<Season>(() => {
     return currentSeasons.find((s: Season) => s.id === state.activeSeasonId) ?? currentSeasons[0];
@@ -1708,6 +1777,12 @@ export default function App() {
   useEffect(() => {
     const t = window.setInterval(() => setClockNow(Date.now()), 1000);
     return () => window.clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (winnerFxTimerRef.current) window.clearTimeout(winnerFxTimerRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -3736,6 +3811,7 @@ export default function App() {
     const chosen = normName(winner);
     const target = currentSoiree.matches.find((m: CoreMatch) => m.id === matchId);
     const isValidChoice = Boolean(target && chosen && (chosen === normName(target.a) || chosen === normName(target.b)));
+    const shouldTriggerWinnerFx = Boolean(isValidChoice && target && normName(target.winner) !== chosen);
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -3767,6 +3843,13 @@ export default function App() {
       setQueuedAutoAdvanceFromMatchId(matchId);
     } else if (!isValidChoice && flowMatchId === matchId) {
       setFlowMatchId("");
+    }
+    if (shouldTriggerWinnerFx) {
+      setWinnerFxMatchId(matchId);
+      if (winnerFxTimerRef.current) window.clearTimeout(winnerFxTimerRef.current);
+      winnerFxTimerRef.current = window.setTimeout(() => {
+        setWinnerFxMatchId((prev) => (prev === matchId ? "" : prev));
+      }, 1300);
     }
   }
 
@@ -4311,7 +4394,9 @@ export default function App() {
               </div>
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <Pill color="#22c55e">Jackpot: {formatEUR(jackpotEUR)}</Pill>
+              <Pill color="#22c55e">
+                Jackpot: <AnimatedMetric value={jackpotEUR} kind="eur" durationMs={900} />
+              </Pill>
               <Pill>Joueurs: {currentSeason.players.length}</Pill>
               <Pill>Soirées: {currentSeason.soirees.length}</Pill>
               {readOnlyMode && <Pill color="#eab308">Lecture seule</Pill>}
@@ -4405,9 +4490,9 @@ export default function App() {
                     <div className="text-xl font-extrabold">{r.name}</div>
                   </div>
                   <div className="mt-3 flex items-center gap-3 text-sm text-white/70">
-                    <span className="font-semibold text-white">{r.pts} pts</span>
-                    <span>• {r.wins} V</span>
-                    <span>• {r.bonus} B</span>
+                    <span className="font-semibold text-white"><AnimatedMetric value={r.pts} kind="int" durationMs={450} /> pts</span>
+                    <span>• <AnimatedMetric value={r.wins} kind="int" durationMs={450} /> V</span>
+                    <span>• <AnimatedMetric value={r.bonus} kind="int" durationMs={450} /> B</span>
                   </div>
                 </div>
               );
@@ -4547,7 +4632,9 @@ export default function App() {
                   {liveSoireeRanking.slice(0, 5).map((r, idx: number) => (
                     <div key={r.name} className="flex items-center justify-between rounded-lg bg-black/25 px-2 py-1">
                       <span className="text-white/70">{idx + 1}. {r.name}</span>
-                      <span className="font-bold">{r.pts} pts</span>
+                      <span className="font-bold">
+                        <AnimatedMetric value={r.pts} kind="int" durationMs={450} /> pts
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -4559,7 +4646,9 @@ export default function App() {
         <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-3">
           <div className="md:col-span-2 rounded-2xl border border-white/10 bg-black/30 p-5">
             <div className="text-xs text-white/60">Jackpot actuel</div>
-            <div className="mt-2 text-4xl font-extrabold">{formatEUR(jackpotEUR)}</div>
+            <div className="mt-2 text-4xl font-extrabold">
+              <AnimatedMetric value={jackpotEUR} kind="eur" durationMs={1000} />
+            </div>
             <div className="mt-2 text-xs text-white/60">
               +{formatEUR(effectiveRules.jackpotPerPlayerEUR)} / joueur / soirée • +{formatEUR(effectiveRules.rebuyEUR)} / re-buy
             </div>
@@ -4701,7 +4790,7 @@ export default function App() {
                         setMatchWinner(m.id, name);
                         if (m.phase === "DEMI") setTimeout(() => recalcFinalAndPFinal(), 0);
                       };
-                      const cardClass = `${winner ? "winner-anim" : ""} ${
+                      const cardClass = `${winner ? "winner-anim" : ""} ${winnerFxMatchId === m.id ? "winner-fx" : ""} ${
                         liveSchedule.nextMatch?.id === m.id ? "ring-1 ring-emerald-400/60" : ""
                       } ${flowMatchId === m.id ? "ring-2 ring-cyan-300/80 shadow-[0_0_24px_rgba(34,211,238,0.35)]" : ""}`;
 
@@ -4878,7 +4967,7 @@ export default function App() {
                           const ptsB = (winner && winner === m.b ? basePts : 0) + bonusB;
                           const matchDurationMs = getMatchDurationMs(m, clockNow);
                           const matchDurationLabel = m.startedAt ? formatDuration(matchDurationMs) : "—";
-                          const rowClass = `${winner ? "winner-row" : ""} ${
+                          const rowClass = `${winner ? "winner-row" : ""} ${winnerFxMatchId === m.id ? "winner-fx-row" : ""} ${
                             liveSchedule.nextMatch?.id === m.id ? "bg-emerald-500/10" : ""
                           } ${flowMatchId === m.id ? "bg-cyan-500/10 ring-1 ring-cyan-300/50" : ""}`;
 
@@ -5191,7 +5280,7 @@ export default function App() {
                             <span className="h-2.5 w-2.5 rounded-full" style={{ background: playerColors.get(x.player) ?? "#ffffff33" }} />
                             <span className="font-semibold">{x.player}</span>
                           </div>
-                          <div className="font-semibold">{formatEUR(x.eur)}</div>
+                          <div className="font-semibold"><AnimatedMetric value={x.eur} kind="eur" durationMs={700} /></div>
                         </div>
                       ))}
                     </div>
@@ -5375,11 +5464,11 @@ export default function App() {
                       </div>
                       <div className="flex items-center gap-3 text-xs sm:text-sm">
                         <span className="text-white/70">PTS</span>
-                        <span className="font-bold">{r.pts}</span>
+                        <span className="font-bold"><AnimatedMetric value={r.pts} kind="int" durationMs={420} /></span>
                         <span className="text-white/70">V</span>
-                        <span className="font-bold">{r.wins}</span>
+                        <span className="font-bold"><AnimatedMetric value={r.wins} kind="int" durationMs={420} /></span>
                         <span className="text-white/70">B</span>
-                        <span className="font-bold">{r.bonus}</span>
+                        <span className="font-bold"><AnimatedMetric value={r.bonus} kind="int" durationMs={420} /></span>
                       </div>
                     </div>
                   );
@@ -5391,7 +5480,9 @@ export default function App() {
               <div className="space-y-3">
                 <div className="rounded-xl border border-white/10 bg-black/30 p-3">
                   <div className="text-xs text-white/60">Jackpot actuel</div>
-                  <div className="mt-1 text-2xl font-extrabold">{formatEUR(jackpotEUR)}</div>
+                  <div className="mt-1 text-2xl font-extrabold">
+                    <AnimatedMetric value={jackpotEUR} kind="eur" durationMs={900} />
+                  </div>
                   <div className="mt-2 text-xs text-white/60">
                     +{formatEUR(effectiveRules.jackpotPerPlayerEUR)} / joueur / soirée • +{formatEUR(effectiveRules.rebuyEUR)} / re-buy
                   </div>
@@ -5406,7 +5497,7 @@ export default function App() {
                           <span className="h-2.5 w-2.5 rounded-full" style={{ background: playerColors.get(s.player) ?? "#ffffff33" }} />
                           <span className="font-semibold">{s.player}</span>
                         </div>
-                        <span className="font-bold">{s.best}</span>
+                        <span className="font-bold"><AnimatedMetric value={s.best} kind="int" durationMs={400} /></span>
                       </div>
                     ))}
                   </div>
@@ -5421,7 +5512,7 @@ export default function App() {
                           <span className="h-2.5 w-2.5 rounded-full" style={{ background: playerColors.get(x.player) ?? "#ffffff33" }} />
                           <span className="font-semibold">{x.player}</span>
                         </div>
-                        <span className="font-bold">{formatEUR(x.eur)}</span>
+                        <span className="font-bold"><AnimatedMetric value={x.eur} kind="eur" durationMs={700} /></span>
                       </div>
                     ))}
                   </div>
@@ -6057,7 +6148,7 @@ export default function App() {
                     Rebuys total : <span className="font-semibold text-white">{currentSeason.soirees.reduce((s: number, x: Soiree) => s + x.rebuys.length, 0)}</span>
                   </div>
                   <div className="mt-2">
-                    Jackpot actuel : <span className="font-extrabold text-white">{formatEUR(jackpotEUR)}</span>
+                    Jackpot actuel : <span className="font-extrabold text-white"><AnimatedMetric value={jackpotEUR} kind="eur" durationMs={900} /></span>
                   </div>
                 </div>
               </Section>

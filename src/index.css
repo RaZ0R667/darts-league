@@ -375,11 +375,19 @@ body {
 .winner-anim {
   position: relative;
   overflow: hidden;
-  animation: winnerPulse 1.2s ease-out 2;
+  background: rgba(34, 197, 94, 0.06);
   box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.25), 0 0 24px rgba(34, 197, 94, 0.25);
 }
 
 .winner-anim::after {
+  content: none;
+}
+
+.winner-fx {
+  animation: winnerPulse 0.9s ease-out 1;
+}
+
+.winner-fx::after {
   content: "";
   position: absolute;
   inset: -40%;
@@ -390,12 +398,16 @@ body {
     radial-gradient(circle, rgba(234, 179, 8, 0.7) 0 2px, transparent 3px),
     radial-gradient(circle, rgba(244, 63, 94, 0.7) 0 2px, transparent 3px);
   background-size: 24px 24px, 28px 28px, 22px 22px, 26px 26px;
-  animation: confetti 1.4s ease-out 1;
+  animation: confetti 1.25s ease-out 1;
   opacity: 0;
 }
 
 .winner-row {
   background: rgba(34, 197, 94, 0.08);
+}
+
+.winner-fx-row {
+  animation: winnerRowFlash 0.95s ease-out 1;
 }
 
 button:focus-visible,
@@ -416,6 +428,11 @@ textarea:focus-visible {
   0% { opacity: 0; transform: translateY(0) rotate(0deg); }
   20% { opacity: 1; }
   100% { opacity: 0; transform: translateY(80px) rotate(12deg); }
+}
+
+@keyframes winnerRowFlash {
+  0% { background-color: rgba(34, 197, 94, 0.34); }
+  100% { background-color: rgba(34, 197, 94, 0.08); }
 }
 
 .final-night-shell {
@@ -523,12 +540,30 @@ textarea:focus-visible {
 }
 
 .app-tab-animate {
-  animation: appTabIn 0.28s cubic-bezier(0.22, 0.8, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+  animation: appTabIn 0.36s cubic-bezier(0.22, 0.8, 0.2, 1);
+}
+
+.app-tab-animate::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(108deg, transparent 12%, rgba(255, 255, 255, 0.14) 40%, transparent 70%);
+  transform: translateX(-130%);
+  animation: appTabSweep 0.5s ease-out 1;
 }
 
 @keyframes appTabIn {
-  0% { opacity: 0; transform: translateY(8px) scale(0.995); }
-  100% { opacity: 1; transform: translateY(0) scale(1); }
+  0% { opacity: 0; transform: translateY(12px) scale(0.99); filter: blur(5px); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+
+@keyframes appTabSweep {
+  0% { transform: translateX(-130%); opacity: 0; }
+  30% { opacity: 0.55; }
+  100% { transform: translateX(130%); opacity: 0; }
 }
 
 .dl-mode-pill {
@@ -631,11 +666,15 @@ textarea:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .app-tab-animate,
+  .app-tab-animate::before,
   .dl-mode-pill,
   .dl-mode-pill::after,
   .dl-nav-card,
   .dl-nav-card::after,
-  .dl-nav-card.is-active {
+  .dl-nav-card.is-active,
+  .winner-fx,
+  .winner-fx::after,
+  .winner-fx-row {
     animation: none !important;
     transition: none !important;
     transform: none !important;
