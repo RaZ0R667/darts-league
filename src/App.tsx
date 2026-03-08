@@ -1,5 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import {
+  DEFAULT_SOIREE_RULE_POLICIES,
+  getActiveSoireeRulePolicy,
+  hasKnockoutStarted,
+  resolveSoireeRuleContext,
+  type ResolvedRuleContext,
+  type SoireeRulePolicy,
+} from "./domain/soireeRules";
+import {
+  computeJackpotEURWithPolicies,
+  computePointsFromMatchesWithPolicies,
+} from "./domain/scoring";
 
 /**
  * Darts League (local-only, Safari)
@@ -127,6 +139,7 @@ type AppState = {
   system: {
     rulesProfile: RulesProfile;
     customRules: RulesConfig;
+    soireeRulePolicies: SoireeRulePolicy[];
     audit: AuditEntry[];
   };
 };
@@ -161,9 +174,6 @@ const FUN_RULES: RulesConfig = {
   jackpotPerPlayerEUR: 0,
   rebuyEUR: 0,
 };
-
-const FINAL_NIGHT_SOIREE_NUMBER = 6;
-const FINAL_NIGHT_PODIUM_POINTS = { first: 3, second: 2, third: 1 } as const;
 
 type SnapshotEntry = {
   id: string;
@@ -251,6 +261,56 @@ function getRules(profile: RulesProfile, customRules: RulesConfig): RulesConfig 
   if (profile === "FUN") return FUN_RULES;
   if (profile === "CUSTOM") return customRules;
   return STANDARD_RULES;
+}
+
+function sanitizeSoireeRulePolicies(raw: unknown): SoireeRulePolicy[] {
+  if (!Array.isArray(raw)) return [...DEFAULT_SOIREE_RULE_POLICIES];
+  const parsed = raw
+    .map((item: any, idx: number) => ({
+      id: normName(item?.id) || `policy_${idx + 1}`,
+      label: normName(item?.label) || `Policy ${idx + 1}`,
+      enabled: Boolean(item?.enabled ?? true),
+      trigger: {
+        soireeNumber: clampInt(Number(item?.trigger?.soireeNumber ?? 0), 0, 99) || undefined,
+        lastSoireeOfSeason: Boolean(item?.trigger?.lastSoireeOfSeason ?? false),
+      },
+      scoring: {
+        matchWinMultiplier: Math.max(1, Number(item?.scoring?.matchWinMultiplier ?? 1)),
+        checkoutBonusMultiplierWithMatchMultiplier: Boolean(
+          item?.scoring?.checkoutBonusMultiplierWithMatchMultiplier ?? false
+        ),
+        checkoutBonusOverrides: {
+          POULE: Number.isFinite(Number(item?.scoring?.checkoutBonusOverrides?.POULE))
+            ? Number(item.scoring.checkoutBonusOverrides.POULE)
+            : undefined,
+          DEMI: Number.isFinite(Number(item?.scoring?.checkoutBonusOverrides?.DEMI))
+            ? Number(item.scoring.checkoutBonusOverrides.DEMI)
+            : undefined,
+          PFINAL: Number.isFinite(Number(item?.scoring?.checkoutBonusOverrides?.PFINAL))
+            ? Number(item.scoring.checkoutBonusOverrides.PFINAL)
+            : undefined,
+          FINAL: Number.isFinite(Number(item?.scoring?.checkoutBonusOverrides?.FINAL))
+            ? Number(item.scoring.checkoutBonusOverrides.FINAL)
+            : undefined,
+        },
+        rebuyPointsMultiplier: Math.max(0, Number(item?.scoring?.rebuyPointsMultiplier ?? 1)),
+        podiumPointsOverride:
+          item?.scoring?.podiumPointsOverride && typeof item.scoring.podiumPointsOverride === "object"
+            ? {
+                first: clampInt(Number(item.scoring.podiumPointsOverride.first ?? 0), 0, 20),
+                second: clampInt(Number(item.scoring.podiumPointsOverride.second ?? 0), 0, 20),
+                third: clampInt(Number(item.scoring.podiumPointsOverride.third ?? 0), 0, 20),
+              }
+            : undefined,
+      },
+      rebuy: {
+        lockAfterKnockoutStart: Boolean(item?.rebuy?.lockAfterKnockoutStart ?? false),
+        jackpotContributionMultiplier: Math.max(0, Number(item?.rebuy?.jackpotContributionMultiplier ?? 1)),
+      },
+    }))
+    .filter((p: SoireeRulePolicy) => p.id && p.label)
+    .slice(0, 20);
+  return parsed.length ? parsed : [...DEFAULT_SOIREE_RULE_POLICIES];
 }
 
 function getMatchStatus(m: CoreMatch): MatchStatus {
@@ -363,68 +423,29 @@ function isFairSoireeMode(soiree: Soiree) {
   return (soiree.absentPlayers?.length ?? 0) > 0;
 }
 
-function isFinalNightSoireeNumber(n?: number) {
-  return Number(n ?? 0) === FINAL_NIGHT_SOIREE_NUMBER;
-}
-
-function isFinalNightSoiree(soiree?: Soiree | null) {
-  return Boolean(soiree && isFinalNightSoireeNumber(soiree.number));
-}
-
-function hasKnockoutStarted(soiree: Soiree) {
-  return soiree.matches.some((m: CoreMatch) => {
-    if (m.phase === "POULE") return false;
-    return Boolean((normName(m.a) && normName(m.b)) || normName(m.winner));
-  });
-}
-
-function getMatchWinPointsForSoiree(match: CoreMatch, soireeNumber: number, rules: RulesConfig) {
+function getMatchWinPointsForSoiree(match: CoreMatch, rules: RulesConfig, ctx: ResolvedRuleContext) {
   const base = match.phase === "PFINAL" ? rules.smallFinalPoints : rules.winPoints;
-  return isFinalNightSoireeNumber(soireeNumber) ? base * 2 : base;
+  return base * ctx.matchWinMultiplier;
 }
 
-function getCheckoutBonusForMatch(match: CoreMatch, soireeNumber: number, rules: RulesConfig) {
+function getCheckoutBonusForMatch(match: CoreMatch, rules: RulesConfig, ctx: ResolvedRuleContext) {
   if (!match.checkoutBy) return 0;
-  if (!isFinalNightSoireeNumber(soireeNumber)) return rules.checkoutBonusPoints;
-  if (match.phase === "FINAL") return 3;
-  return rules.checkoutBonusPoints * 2;
-}
-
-function computeFinalNightPodiumPoints(matches: CoreMatch[]) {
-  const pts = new Map<string, number>();
-  const add = (name: string, value: number) => {
-    const n = normName(name);
-    if (!n) return;
-    pts.set(n, (pts.get(n) ?? 0) + value);
-  };
-
-  const final = matches.find((m: CoreMatch) => m.phase === "FINAL");
-  const pfinal = matches.find((m: CoreMatch) => m.phase === "PFINAL");
-  const first = normName(final?.winner ?? "");
-  const second =
-    first && first === normName(final?.a ?? "")
-      ? normName(final?.b ?? "")
-      : first && first === normName(final?.b ?? "")
-        ? normName(final?.a ?? "")
-        : "";
-  const third = normName(pfinal?.winner ?? "");
-  if (!first || !second || !third) return pts;
-
-  add(first, FINAL_NIGHT_PODIUM_POINTS.first);
-  add(second, FINAL_NIGHT_PODIUM_POINTS.second);
-  add(third, FINAL_NIGHT_PODIUM_POINTS.third);
-  return pts;
+  const override = ctx.checkoutBonusOverrides[match.phase];
+  if (typeof override === "number") return override;
+  if (ctx.checkoutBonusMultiplierWithMatchMultiplier) return rules.checkoutBonusPoints * ctx.matchWinMultiplier;
+  return rules.checkoutBonusPoints;
 }
 
 function computePoolRows(
   soiree: Soiree,
   pool: "A" | "B",
   season: Season,
-  rules: RulesConfig
+  rules: RulesConfig,
+  rulePolicies: SoireeRulePolicy[] = DEFAULT_SOIREE_RULE_POLICIES
 ) {
   const players = soiree.pools[pool];
   const relevant = soiree.matches.filter((m: CoreMatch) => m.phase === "POULE" && m.pool === pool);
-  const { pts, wins, bonus } = computePointsFromMatches(relevant, [], soiree.number, season, rules);
+  const { pts, wins, bonus } = computePointsFromMatches(relevant, [], soiree.number, season, rules, rulePolicies);
   const fairMode = isFairSoireeMode(soiree);
 
   const playedMap = new Map<string, number>();
@@ -459,13 +480,18 @@ function computePoolRows(
   return rows;
 }
 
-function computeSoireeRankingPoints(soiree: Soiree, season: Season, rules: RulesConfig) {
+function computeSoireeRankingPoints(
+  soiree: Soiree,
+  season: Season,
+  rules: RulesConfig,
+  rulePolicies: SoireeRulePolicy[] = DEFAULT_SOIREE_RULE_POLICIES
+) {
   const participants = uniq([...soiree.pools.A, ...soiree.pools.B]).filter(isNonEmptyString);
   if (!participants.length) return new Map<string, number>();
   const fairMode = isFairSoireeMode(soiree);
 
-  const poolA = computePoolRows(soiree, "A", season, rules);
-  const poolB = computePoolRows(soiree, "B", season, rules);
+  const poolA = computePoolRows(soiree, "A", season, rules, rulePolicies);
+  const poolB = computePoolRows(soiree, "B", season, rules, rulePolicies);
 
   const ov = soiree.qualifiersOverride ?? {};
   const A1 = normName(ov.A1 || poolA[0]?.name || "");
@@ -486,7 +512,14 @@ function computeSoireeRankingPoints(soiree: Soiree, season: Season, rules: Rules
         .sort((a, b) => b.avg - a.avg || b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name))
         .map((x) => x.name)
     : (() => {
-        const fallbackStats = computePointsFromMatches(soiree.matches, [], soiree.number, season, rules);
+        const fallbackStats = computePointsFromMatches(
+          soiree.matches,
+          [],
+          soiree.number,
+          season,
+          rules,
+          rulePolicies
+        );
         return participants
           .map((p: string) => ({
             name: p,
@@ -520,7 +553,23 @@ function computePointsFromMatches(
   rebuyMatches: RebuyMatch[],
   seasonSoireeNumber?: number,
   season?: Season,
-  rules: RulesConfig = STANDARD_RULES
+  rules: RulesConfig = STANDARD_RULES,
+  rulePolicies: SoireeRulePolicy[] = DEFAULT_SOIREE_RULE_POLICIES
+) {
+  return computePointsFromMatchesWithPolicies(
+    matches,
+    rebuyMatches,
+    seasonSoireeNumber,
+    season,
+    rules,
+    rulePolicies
+  );
+}
+
+function aggregateSeasonStats(
+  season: Season,
+  rules: RulesConfig = STANDARD_RULES,
+  rulePolicies: SoireeRulePolicy[] = DEFAULT_SOIREE_RULE_POLICIES
 ) {
   const pts = new Map<string, number>();
   const wins = new Map<string, number>();
@@ -531,96 +580,17 @@ function computePointsFromMatches(
     map.set(key, (map.get(key) ?? 0) + delta);
   };
 
-  for (const m of matches) {
-    const w = normName(m.winner);
-    if (w) {
-      const basePts = getMatchWinPointsForSoiree(m, Number(seasonSoireeNumber ?? 0), rules);
-      add(pts, w, basePts);
-      add(wins, w, 1);
-    }
-
-    if (m.checkoutBy === "A" && normName(m.a)) {
-      add(bonus, normName(m.a), 1);
-      add(pts, normName(m.a), getCheckoutBonusForMatch(m, Number(seasonSoireeNumber ?? 0), rules));
-    } else if (m.checkoutBy === "B" && normName(m.b)) {
-      add(bonus, normName(m.b), 1);
-      add(pts, normName(m.b), getCheckoutBonusForMatch(m, Number(seasonSoireeNumber ?? 0), rules));
-    }
-  }
-
-  const soN = Number(seasonSoireeNumber ?? 0);
-
-  const priorCompleted = new Map<string, number>();
-  if (soN >= 3 && season) {
-    const soireesAsc = [...season.soirees].sort((a: Soiree, b: Soiree) => a.number - b.number);
-    for (const s of soireesAsc) {
-      if (s.number >= soN) break;
-      for (const rb of s.rebuys) {
-        const buyer = normName(rb.buyer);
-        const w = normName(rb.winner);
-        if (!buyer || !w) continue;
-        priorCompleted.set(buyer, (priorCompleted.get(buyer) ?? 0) + 1);
-      }
-    }
-  }
-
-  const sortedRebuys = [...rebuyMatches].sort((a: RebuyMatch, b: RebuyMatch) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
-
-  const localCompleted = new Map<string, number>();
-  const doneBefore = (buyer: string) => (priorCompleted.get(buyer) ?? 0) + (localCompleted.get(buyer) ?? 0);
-  const incLocalDone = (buyer: string) => localCompleted.set(buyer, (localCompleted.get(buyer) ?? 0) + 1);
-
-  for (const r of sortedRebuys) {
-    const buyer = normName(r.buyer);
-    const w = normName(r.winner);
-    if (!buyer || !w) continue;
-
-    if (soN > 0 && soN <= 2) {
-      if (w === buyer) {
-        add(pts, buyer, rules.rebuyWinPointsS1S2);
-        add(wins, buyer, 1);
-      }
-      incLocalDone(buyer);
-      continue;
-    }
-
-    const winPts =
-      soN >= 3
-        ? doneBefore(buyer) === 0
-          ? rules.rebuyFirstWinPointsS3Plus
-          : rules.rebuyNextWinPointsS3Plus
-        : rules.rebuyWinPointsS1S2;
-
-    if (w === buyer) {
-      add(pts, buyer, winPts);
-      add(wins, buyer, 1);
-    }
-
-    incLocalDone(buyer);
-  }
-
-  if (isFinalNightSoireeNumber(soN)) {
-    const podiumPts = computeFinalNightPodiumPoints(matches);
-    for (const [name, value] of podiumPts.entries()) add(pts, name, value);
-  }
-
-  return { pts, wins, bonus };
-}
-
-function aggregateSeasonStats(season: Season, rules: RulesConfig = STANDARD_RULES) {
-  const pts = new Map<string, number>();
-  const wins = new Map<string, number>();
-  const bonus = new Map<string, number>();
-
-  const add = (map: Map<string, number>, key: string, delta: number) => {
-    if (!key) return;
-    map.set(key, (map.get(key) ?? 0) + delta);
-  };
-
   for (const s of season.soirees) {
-    const { pts: p, wins: w, bonus: b } = computePointsFromMatches(s.matches, s.rebuys, s.number, season, rules);
+    const { pts: p, wins: w, bonus: b } = computePointsFromMatches(
+      s.matches,
+      s.rebuys,
+      s.number,
+      season,
+      rules,
+      rulePolicies
+    );
     if (isFairSoireeMode(s)) {
-      const soireePoints = computeSoireeRankingPoints(s, season, rules);
+      const soireePoints = computeSoireeRankingPoints(s, season, rules, rulePolicies);
       for (const [k, v] of soireePoints.entries()) add(pts, k, v);
     } else {
       for (const [k, v] of p.entries()) add(pts, k, v);
@@ -651,10 +621,25 @@ function aggregateSeasonStats(season: Season, rules: RulesConfig = STANDARD_RULE
   return { table, pts, wins, bonus };
 }
 
-function computeJackpotEUR(season: Season, rules: RulesConfig = STANDARD_RULES) {
-  const base = season.soirees.reduce((sum, s) => sum + s.pools.A.length + s.pools.B.length, 0);
-  const rebuyCount = season.soirees.reduce((sum, s) => sum + s.rebuys.length, 0);
-  return base * rules.jackpotPerPlayerEUR + rebuyCount * rules.rebuyEUR;
+function computeJackpotEUR(
+  season: Season,
+  rules: RulesConfig = STANDARD_RULES,
+  rulePolicies: SoireeRulePolicy[] = DEFAULT_SOIREE_RULE_POLICIES
+) {
+  return computeJackpotEURWithPolicies(season, rules, rulePolicies);
+}
+
+function computeSoireeJackpotEUR(
+  soiree: Soiree,
+  season: Season,
+  rules: RulesConfig = STANDARD_RULES,
+  rulePolicies: SoireeRulePolicy[] = DEFAULT_SOIREE_RULE_POLICIES
+) {
+  const ctx = resolveSoireeRuleContext(soiree, season, rulePolicies);
+  return (
+    (soiree.pools.A.length + soiree.pools.B.length) * rules.jackpotPerPlayerEUR +
+    soiree.rebuys.length * rules.rebuyEUR * ctx.rebuyJackpotContributionMultiplier
+  );
 }
 
 function computeWinStreaks(season: Season) {
@@ -792,9 +777,21 @@ function computeAdvancedStats(season: Season) {
   return { winRates, clutch, semiRuns };
 }
 
-function computeSoireeRankingRows(soiree: Soiree, season: Season, rules: RulesConfig) {
+function computeSoireeRankingRows(
+  soiree: Soiree,
+  season: Season,
+  rules: RulesConfig,
+  rulePolicies: SoireeRulePolicy[] = DEFAULT_SOIREE_RULE_POLICIES
+) {
   const participants = uniq([...soiree.pools.A, ...soiree.pools.B].map(normName)).filter(isNonEmptyString);
-  const { pts, wins, bonus } = computePointsFromMatches(soiree.matches, soiree.rebuys, soiree.number, season, rules);
+  const { pts, wins, bonus } = computePointsFromMatches(
+    soiree.matches,
+    soiree.rebuys,
+    soiree.number,
+    season,
+    rules,
+    rulePolicies
+  );
   const rows = participants.map((p: string) => ({
     name: p,
     pts: pts.get(p) ?? 0,
@@ -805,7 +802,12 @@ function computeSoireeRankingRows(soiree: Soiree, season: Season, rules: RulesCo
   return rows;
 }
 
-function computeSoireePodium(soiree: Soiree, season: Season, rules: RulesConfig) {
+function computeSoireePodium(
+  soiree: Soiree,
+  season: Season,
+  rules: RulesConfig,
+  rulePolicies: SoireeRulePolicy[] = DEFAULT_SOIREE_RULE_POLICIES
+) {
   const final = soiree.matches.find((m: CoreMatch) => m.phase === "FINAL");
   const pfinal = soiree.matches.find((m: CoreMatch) => m.phase === "PFINAL");
   const wFinal = normName(final?.winner ?? "");
@@ -816,7 +818,7 @@ function computeSoireePodium(soiree: Soiree, season: Season, rules: RulesConfig)
   const third = normName(pfinal?.winner ?? "");
   if (wFinal && second && third) return { first: wFinal, second, third, provisional: false as const };
 
-  const rows = computeSoireeRankingRows(soiree, season, rules);
+  const rows = computeSoireeRankingRows(soiree, season, rules, rulePolicies);
   return {
     first: rows[0]?.name ?? "",
     second: rows[1]?.name ?? "",
@@ -867,6 +869,7 @@ function makeInitialState(): AppState {
     system: {
       rulesProfile: "STANDARD",
       customRules: { ...STANDARD_RULES },
+      soireeRulePolicies: [...DEFAULT_SOIREE_RULE_POLICIES],
       audit: [],
     },
   };
@@ -1076,6 +1079,7 @@ function sanitizeState(raw: any): AppState {
           }))
           .slice(0, 300)
       : [];
+    const soireeRulePolicies = sanitizeSoireeRulePolicies(raw.system?.soireeRulePolicies);
 
     return {
       version: v || VERSION,
@@ -1097,6 +1101,7 @@ function sanitizeState(raw: any): AppState {
       system: {
         rulesProfile,
         customRules,
+        soireeRulePolicies,
         audit,
       },
     };
@@ -1533,8 +1538,18 @@ export default function App() {
     () => getRules(state.system.rulesProfile, state.system.customRules),
     [state.system.rulesProfile, state.system.customRules]
   );
-  const seasonStats = useMemo(() => aggregateSeasonStats(currentSeason, effectiveRules), [currentSeason, effectiveRules]);
-  const jackpotEUR = useMemo(() => computeJackpotEUR(currentSeason, effectiveRules), [currentSeason, effectiveRules]);
+  const activeSoireeRulePolicies = useMemo(
+    () => sanitizeSoireeRulePolicies(state.system.soireeRulePolicies),
+    [state.system.soireeRulePolicies]
+  );
+  const seasonStats = useMemo(
+    () => aggregateSeasonStats(currentSeason, effectiveRules, activeSoireeRulePolicies),
+    [currentSeason, effectiveRules, activeSoireeRulePolicies]
+  );
+  const jackpotEUR = useMemo(
+    () => computeJackpotEUR(currentSeason, effectiveRules, activeSoireeRulePolicies),
+    [currentSeason, effectiveRules, activeSoireeRulePolicies]
+  );
   const streaks = useMemo(() => computeWinStreaks(currentSeason), [currentSeason]);
   const h2h = useMemo(() => computeHeadToHead(currentSeason), [currentSeason]);
   const advancedStats = useMemo(() => computeAdvancedStats(currentSeason), [currentSeason]);
@@ -1567,8 +1582,21 @@ export default function App() {
   const closureSeason = closureContext?.season ?? currentSeason;
   const currentSoireeLocked = Boolean(currentSoiree?.locked);
   const fairSoireeMode = useMemo(() => isFairSoireeMode(currentSoiree), [currentSoiree]);
-  const finalNightMode = useMemo(() => isFinalNightSoiree(currentSoiree), [currentSoiree]);
-  const rebuyLockedByPhase = useMemo(() => hasKnockoutStarted(currentSoiree), [currentSoiree]);
+  const currentSoireeRuleContext = useMemo(
+    () => resolveSoireeRuleContext(currentSoiree, currentSeason, activeSoireeRulePolicies),
+    [currentSoiree, currentSeason, activeSoireeRulePolicies]
+  );
+  const activeSoireeRulePolicy = useMemo(
+    () => getActiveSoireeRulePolicy(currentSoiree, currentSeason, activeSoireeRulePolicies),
+    [currentSoiree, currentSeason, activeSoireeRulePolicies]
+  );
+  const finalNightMode = Boolean(activeSoireeRulePolicy);
+  const activePolicySoireeNumber = activeSoireeRulePolicy?.trigger.soireeNumber ?? currentSoiree.number;
+  const activePolicyPodiumPoints = currentSoireeRuleContext.podiumPointsOverride;
+  const rebuyLockedByPhase = useMemo(
+    () => currentSoireeRuleContext.rebuyLockAfterKnockoutStart && hasKnockoutStarted(currentSoiree),
+    [currentSoireeRuleContext.rebuyLockAfterKnockoutStart, currentSoiree]
+  );
 
   useEffect(() => {
     if (readOnlyMode) return;
@@ -1833,14 +1861,24 @@ export default function App() {
       currentSoiree.rebuys,
       currentSoiree.number,
       currentSeason,
-      effectiveRules
+      effectiveRules,
+      activeSoireeRulePolicies
     );
     const rows = participants.map((p: string) => ({ name: p, pts: pts.get(p) ?? 0, wins: wins.get(p) ?? 0 }));
     rows.sort((a: { name: string; pts: number; wins: number }, b: { name: string; pts: number; wins: number }) =>
       b.pts - a.pts || b.wins - a.wins || a.name.localeCompare(b.name)
     );
     return rows;
-  }, [currentSoiree.matches, currentSoiree.rebuys, currentSoiree.number, currentSoiree.pools.A, currentSoiree.pools.B, currentSeason, effectiveRules]);
+  }, [
+    currentSoiree.matches,
+    currentSoiree.rebuys,
+    currentSoiree.number,
+    currentSoiree.pools.A,
+    currentSoiree.pools.B,
+    currentSeason,
+    effectiveRules,
+    activeSoireeRulePolicies,
+  ]);
 
   const tvLiveFocus = useMemo(() => {
     const running = currentSoiree.matches
@@ -1857,10 +1895,10 @@ export default function App() {
 
   const currentPoolStandings = useMemo(() => {
     return {
-      A: computePoolRows(currentSoiree, "A", currentSeason, effectiveRules),
-      B: computePoolRows(currentSoiree, "B", currentSeason, effectiveRules),
+      A: computePoolRows(currentSoiree, "A", currentSeason, effectiveRules, activeSoireeRulePolicies),
+      B: computePoolRows(currentSoiree, "B", currentSeason, effectiveRules, activeSoireeRulePolicies),
     };
-  }, [currentSoiree.matches, currentSoiree.pools, currentSoiree.number, currentSeason, effectiveRules]);
+  }, [currentSoiree.matches, currentSoiree.pools, currentSoiree.number, currentSeason, effectiveRules, activeSoireeRulePolicies]);
 
   const allSoireeNumbers = useMemo(() => {
     return [...currentSeason.soirees].map((s: Soiree) => s.number).sort((a: number, b: number) => a - b);
@@ -2110,7 +2148,14 @@ export default function App() {
   }
 
   function buildSoireeSummaryText(soiree: Soiree) {
-    const { pts, wins } = computePointsFromMatches(soiree.matches, soiree.rebuys, soiree.number, currentSeason, effectiveRules);
+    const { pts, wins } = computePointsFromMatches(
+      soiree.matches,
+      soiree.rebuys,
+      soiree.number,
+      currentSeason,
+      effectiveRules,
+      activeSoireeRulePolicies
+    );
     const ranking = uniq([...soiree.pools.A, ...soiree.pools.B].map(normName))
       .filter(isNonEmptyString)
       .map((p: string) => ({ name: p, pts: pts.get(p) ?? 0, wins: wins.get(p) ?? 0 }))
@@ -2135,7 +2180,14 @@ export default function App() {
   }
 
   function exportSoireeSummaryPDF(soiree: Soiree) {
-    const { pts, wins } = computePointsFromMatches(soiree.matches, soiree.rebuys, soiree.number, currentSeason, effectiveRules);
+    const { pts, wins } = computePointsFromMatches(
+      soiree.matches,
+      soiree.rebuys,
+      soiree.number,
+      currentSeason,
+      effectiveRules,
+      activeSoireeRulePolicies
+    );
     const ranking = uniq([...soiree.pools.A, ...soiree.pools.B].map(normName))
       .filter(isNonEmptyString)
       .map((p: string) => ({ name: p, pts: pts.get(p) ?? 0, wins: wins.get(p) ?? 0 }))
@@ -2871,7 +2923,7 @@ export default function App() {
         const split = Math.ceil(sh.length / 2);
         pools = { A: sh.slice(0, split), B: sh.slice(split) };
       } else {
-        const ranked = aggregateSeasonStats(season, effectiveRules)
+        const ranked = aggregateSeasonStats(season, effectiveRules, activeSoireeRulePolicies)
           .table
           .map((x) => x.name)
           .filter((name) => players.includes(name));
@@ -3075,8 +3127,8 @@ export default function App() {
 
   function recalcFinalsFromPools() {
     if (currentSoireeLocked) return;
-    const A = computePoolRows(currentSoiree, "A", currentSeason, effectiveRules);
-    const B = computePoolRows(currentSoiree, "B", currentSeason, effectiveRules);
+    const A = computePoolRows(currentSoiree, "A", currentSeason, effectiveRules, activeSoireeRulePolicies);
+    const B = computePoolRows(currentSoiree, "B", currentSeason, effectiveRules, activeSoireeRulePolicies);
     const fairMode = isFairSoireeMode(currentSoiree);
 
     const ov = currentSoiree.qualifiersOverride ?? {};
@@ -3238,7 +3290,14 @@ export default function App() {
     const third = normName(pfinal?.winner ?? "");
 
     if (!wFinal || !second || !third) {
-      const { pts, wins } = computePointsFromMatches(currentSoiree.matches, [], currentSoiree.number, currentSeason, effectiveRules);
+      const { pts, wins } = computePointsFromMatches(
+        currentSoiree.matches,
+        [],
+        currentSoiree.number,
+        currentSeason,
+        effectiveRules,
+        activeSoireeRulePolicies
+      );
       const rows = currentSeason.players.map((p: string) => ({
         name: p,
         pts: pts.get(p) ?? 0,
@@ -3261,7 +3320,7 @@ export default function App() {
       third,
       provisional: false as const,
     };
-  }, [currentSoiree.matches, currentSoiree.number, currentSeason, effectiveRules]);
+  }, [currentSoiree.matches, currentSoiree.number, currentSeason, effectiveRules, activeSoireeRulePolicies]);
 
 
   const totalGainsEUR = useMemo(() => {
@@ -3280,7 +3339,14 @@ export default function App() {
       const third = normName(pfinal?.winner ?? "");
 
       if (!wFinal || !second || !third) {
-        const { pts, wins } = computePointsFromMatches(s.matches, [], s.number, currentSeason, effectiveRules);
+        const { pts, wins } = computePointsFromMatches(
+          s.matches,
+          [],
+          s.number,
+          currentSeason,
+          effectiveRules,
+          activeSoireeRulePolicies
+        );
         const rows = currentSeason.players.map((p: string) => ({ name: p, pts: pts.get(p) ?? 0, wins: wins.get(p) ?? 0 }));
         rows.sort((a: { name: string; pts: number; wins: number }, b: { name: string; pts: number; wins: number }) =>
           b.pts - a.pts || b.wins - a.wins || a.name.localeCompare(b.name)
@@ -3301,17 +3367,17 @@ export default function App() {
     const out = currentSeason.players.map((p: string) => ({ player: p, eur: totals.get(p) ?? 0 }));
     out.sort((a: { player: string; eur: number }, b: { player: string; eur: number }) => b.eur - a.eur || a.player.localeCompare(b.player));
     return out;
-  }, [currentSeason.players, currentSeason.soirees, effectiveRules]);
+  }, [currentSeason.players, currentSeason.soirees, effectiveRules, activeSoireeRulePolicies]);
 
   const closureSoireePodium = useMemo(() => {
     if (!closureSoiree) return null;
-    return computeSoireePodium(closureSoiree, closureSeason, effectiveRules);
-  }, [closureSoiree, closureSeason, effectiveRules]);
+    return computeSoireePodium(closureSoiree, closureSeason, effectiveRules, activeSoireeRulePolicies);
+  }, [closureSoiree, closureSeason, effectiveRules, activeSoireeRulePolicies]);
 
   const closureSoireeRankingRows = useMemo(() => {
     if (!closureSoiree) return [];
-    return computeSoireeRankingRows(closureSoiree, closureSeason, effectiveRules);
-  }, [closureSoiree, closureSeason, effectiveRules]);
+    return computeSoireeRankingRows(closureSoiree, closureSeason, effectiveRules, activeSoireeRulePolicies);
+  }, [closureSoiree, closureSeason, effectiveRules, activeSoireeRulePolicies]);
 
   useEffect(() => {
     if (readOnlyMode) return;
@@ -3341,7 +3407,14 @@ export default function App() {
     players.forEach((p: string) => series.set(p, []));
 
     for (const s of soirees) {
-      const { pts, wins, bonus } = computePointsFromMatches(s.matches, s.rebuys, s.number, currentSeason, effectiveRules);
+      const { pts, wins, bonus } = computePointsFromMatches(
+        s.matches,
+        s.rebuys,
+        s.number,
+        currentSeason,
+        effectiveRules,
+        activeSoireeRulePolicies
+      );
       for (const p of players) {
         const t = totals.get(p)!;
         totals.set(p, {
@@ -3369,7 +3442,7 @@ export default function App() {
       labels: soirees.map((s: Soiree) => s.number),
       series: players.map((p: string) => ({ player: p, ranks: series.get(p) ?? [] })),
     };
-  }, [currentSeason.players, currentSeason.soirees, effectiveRules]);
+  }, [currentSeason.players, currentSeason.soirees, effectiveRules, activeSoireeRulePolicies]);
 
   useEffect(() => {
     const maxStep = Math.max(0, rankingTimeline.labels.length - 1);
@@ -3427,7 +3500,11 @@ export default function App() {
               {readOnlyMode && <Pill color="#eab308">Lecture seule</Pill>}
               {tvMode && <Pill color="#38bdf8">MODE TV</Pill>}
               {tvMode && <Pill>Écran: {tvLabels[tab] ?? tab}</Pill>}
-              {tab === "SOIREE" && finalNightMode && <Pill color="#f97316">Finale Saison • Soirée {FINAL_NIGHT_SOIREE_NUMBER}</Pill>}
+              {tab === "SOIREE" && finalNightMode && (
+                <Pill color="#f97316">
+                  {activeSoireeRulePolicy?.label || "Règles spéciales"} • Soirée {activePolicySoireeNumber}
+                </Pill>
+              )}
             </div>
           </div>
 
@@ -3664,9 +3741,17 @@ export default function App() {
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <div className="text-[11px] uppercase tracking-[0.28em] text-fuchsia-200/80">Mode Final</div>
-                    <div className="text-lg font-extrabold">Soirée {FINAL_NIGHT_SOIREE_NUMBER} — points doublés sur les matchs</div>
+                    <div className="text-lg font-extrabold">
+                      Soirée {activePolicySoireeNumber} — règles spéciales activées
+                    </div>
                     <div className="text-xs text-white/70">
-                      Re-buys illimités en poules, fermés en phases finales • Bonus checkout finale: +3 • Podium points: 3/2/1
+                      Multiplicateur matchs x{currentSoireeRuleContext.matchWinMultiplier} •
+                      Bonus finale: +
+                      {currentSoireeRuleContext.checkoutBonusOverrides.FINAL ?? effectiveRules.checkoutBonusPoints}
+                      {activePolicyPodiumPoints
+                        ? ` • Podium: ${activePolicyPodiumPoints.first}/${activePolicyPodiumPoints.second}/${activePolicyPodiumPoints.third}`
+                        : ""}
+                      {currentSoireeRuleContext.rebuyLockAfterKnockoutStart ? " • Re-buys fermés dès les phases finales" : ""}
                     </div>
                   </div>
                   <Pill color="#f97316">Jackpot final boost</Pill>
@@ -3699,10 +3784,10 @@ export default function App() {
                     .sort((a: CoreMatch, b: CoreMatch) => a.order - b.order)
                     .map((m: CoreMatch) => {
                       const winner = normName(m.winner);
-                      const checkoutPts = getCheckoutBonusForMatch(m, currentSoiree.number, effectiveRules);
+                      const checkoutPts = getCheckoutBonusForMatch(m, effectiveRules, currentSoireeRuleContext);
                       const bonusA = m.checkoutBy === "A" ? checkoutPts : 0;
                       const bonusB = m.checkoutBy === "B" ? checkoutPts : 0;
-                      const basePts = getMatchWinPointsForSoiree(m, currentSoiree.number, effectiveRules);
+                      const basePts = getMatchWinPointsForSoiree(m, effectiveRules, currentSoireeRuleContext);
                       const ptsA = (winner && winner === m.a ? basePts : 0) + bonusA;
                       const ptsB = (winner && winner === m.b ? basePts : 0) + bonusB;
                       const matchDurationMs = getMatchDurationMs(m, clockNow);
@@ -3880,10 +3965,10 @@ export default function App() {
                         .sort((a: CoreMatch, b: CoreMatch) => a.order - b.order)
                         .map((m: CoreMatch) => {
                           const winner = normName(m.winner);
-                          const checkoutPts = getCheckoutBonusForMatch(m, currentSoiree.number, effectiveRules);
+                          const checkoutPts = getCheckoutBonusForMatch(m, effectiveRules, currentSoireeRuleContext);
                           const bonusA = m.checkoutBy === "A" ? checkoutPts : 0;
                           const bonusB = m.checkoutBy === "B" ? checkoutPts : 0;
-                          const basePts = getMatchWinPointsForSoiree(m, currentSoiree.number, effectiveRules);
+                          const basePts = getMatchWinPointsForSoiree(m, effectiveRules, currentSoireeRuleContext);
                           const ptsA = (winner && winner === m.a ? basePts : 0) + bonusA;
                           const ptsB = (winner && winner === m.b ? basePts : 0) + bonusB;
                           const matchDurationMs = getMatchDurationMs(m, clockNow);
@@ -4165,9 +4250,9 @@ export default function App() {
 
               <Section title="Podium & gains (soirée)">
                 <div className="space-y-2 text-sm">
-                  {finalNightMode && (
+                  {finalNightMode && activePolicyPodiumPoints && (
                     <div className="rounded-xl border border-fuchsia-400/25 bg-fuchsia-500/10 px-3 py-2 text-xs text-fuchsia-100">
-                      Bonus classement Mode Final: podium = +{FINAL_NIGHT_PODIUM_POINTS.first} / +{FINAL_NIGHT_PODIUM_POINTS.second} / +{FINAL_NIGHT_PODIUM_POINTS.third} points.
+                      Bonus classement: podium = +{activePolicyPodiumPoints?.first ?? 0} / +{activePolicyPodiumPoints?.second ?? 0} / +{activePolicyPodiumPoints?.third ?? 0} points.
                     </div>
                   )}
                   <div className="flex items-center justify-between">
@@ -4609,7 +4694,14 @@ export default function App() {
                   .slice()
                   .sort((a: Soiree, b: Soiree) => b.number - a.number)
                   .map((s: Soiree) => {
-                    const { pts, wins } = computePointsFromMatches(s.matches, s.rebuys, s.number, currentSeason, effectiveRules);
+                    const { pts, wins } = computePointsFromMatches(
+                      s.matches,
+                      s.rebuys,
+                      s.number,
+                      currentSeason,
+                      effectiveRules,
+                      activeSoireeRulePolicies
+                    );
                     const rows = currentSeason.players.map((p: string) => ({ name: p, pts: pts.get(p) ?? 0, wins: wins.get(p) ?? 0 }));
                     rows.sort((a: { name: string; pts: number; wins: number }, b: { name: string; pts: number; wins: number }) =>
                       b.pts - a.pts || b.wins - a.wins || a.name.localeCompare(b.name)
@@ -4660,7 +4752,7 @@ export default function App() {
                         <div className="mt-2 flex flex-wrap gap-2">
                           <Pill>
                             Jackpot +
-                            {formatEUR((s.pools.A.length + s.pools.B.length) * effectiveRules.jackpotPerPlayerEUR + s.rebuys.length * effectiveRules.rebuyEUR)}
+                            {formatEUR(computeSoireeJackpotEUR(s, currentSeason, effectiveRules, activeSoireeRulePolicies))}
                           </Pill>
                           <Pill>Matchs: {s.matches.length}</Pill>
                         </div>
@@ -4727,7 +4819,7 @@ export default function App() {
               >
                 {finalNightMode && (
                   <div className="mb-3 rounded-xl border border-fuchsia-400/25 bg-fuchsia-500/10 p-3 text-xs text-fuchsia-100">
-                    Mode Final Soirée {FINAL_NIGHT_SOIREE_NUMBER}: re-buys illimités pendant les poules, puis verrouillés dès que les phases finales démarrent.
+                    {activeSoireeRulePolicy?.label || "Règles spéciales"} Soirée {activePolicySoireeNumber}: re-buys illimités pendant les poules, puis verrouillés dès que les phases finales démarrent.
                   </div>
                 )}
                 {currentSoiree.rebuys.length === 0 ? (
@@ -4748,7 +4840,7 @@ export default function App() {
 
                         if (currentSoiree.number <= 2) {
                           return winnerN === buyerN
-                            ? `✅ Le buyer gagne +${effectiveRules.rebuyWinPointsS1S2} pts`
+                            ? `✅ Le buyer gagne +${effectiveRules.rebuyWinPointsS1S2 * currentSoireeRuleContext.rebuyPointsMultiplier} pts`
                             : "❌ Buyer perd → 0 pt pour tous";
                         }
 
@@ -4763,7 +4855,8 @@ export default function App() {
                           .slice(0, idx)
                           .filter((x: RebuyMatch) => normName(x.buyer) === buyerN && normName(x.winner)).length;
 
-                        const winPts = doneBefore === 0 ? effectiveRules.rebuyFirstWinPointsS3Plus : effectiveRules.rebuyNextWinPointsS3Plus;
+                        const baseWinPts = doneBefore === 0 ? effectiveRules.rebuyFirstWinPointsS3Plus : effectiveRules.rebuyNextWinPointsS3Plus;
+                        const winPts = baseWinPts * currentSoireeRuleContext.rebuyPointsMultiplier;
                         return winnerN === buyerN
                           ? `✅ Le buyer gagne +${winPts} pt${winPts > 1 ? "s" : ""}`
                           : "❌ Buyer perd → 0 pt pour tous";
@@ -4860,7 +4953,7 @@ export default function App() {
                   <div className="ml-3">— s’il perd : 0 pt pour tous</div>
                   {finalNightMode && (
                     <>
-                      <div className="mt-2">• Spécial finale (S{FINAL_NIGHT_SOIREE_NUMBER}) :</div>
+                      <div className="mt-2">• Spécial finale (S{activePolicySoireeNumber}) :</div>
                       <div className="ml-3">— Re-buys illimités en poules, fermés en phases finales</div>
                       <div className="ml-3">— Points re-buy non doublés</div>
                       <div className="ml-3">— 100% des re-buys vont dans le jackpot final</div>
@@ -5793,6 +5886,166 @@ export default function App() {
                       </label>
                     </div>
                   )}
+                </div>
+
+                <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                  <div className="text-xs text-white/60">Moteur de règles déclaratif (par soirée)</div>
+                  <div className="mt-2 space-y-3">
+                    {state.system.soireeRulePolicies.map((policy, idx) => (
+                      <div key={policy.id} className="rounded-lg border border-white/10 bg-black/20 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="font-semibold text-sm">{policy.label}</div>
+                          <label className="inline-flex items-center gap-2 text-xs">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 rounded border-white/20 bg-black"
+                              checked={policy.enabled}
+                              onChange={(e) =>
+                                updateSystem((system) => ({
+                                  ...system,
+                                  soireeRulePolicies: system.soireeRulePolicies.map((p, i) =>
+                                    i === idx ? { ...p, enabled: e.target.checked } : p
+                                  ),
+                                }))
+                              }
+                            />
+                            Activée
+                          </label>
+                        </div>
+
+                        <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                          <label>
+                            Soirée cible
+                            <input
+                              className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-white"
+                              type="number"
+                              min={1}
+                              max={99}
+                              value={policy.trigger.soireeNumber ?? 6}
+                              onChange={(e) =>
+                                updateSystem((system) => ({
+                                  ...system,
+                                  soireeRulePolicies: system.soireeRulePolicies.map((p, i) =>
+                                    i === idx
+                                      ? {
+                                          ...p,
+                                          trigger: { ...p.trigger, soireeNumber: clampInt(Number(e.target.value), 1, 99) },
+                                        }
+                                      : p
+                                  ),
+                                }))
+                              }
+                            />
+                          </label>
+                          <label>
+                            Multiplicateur points match
+                            <input
+                              className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-white"
+                              type="number"
+                              min={1}
+                              max={5}
+                              value={policy.scoring.matchWinMultiplier}
+                              onChange={(e) =>
+                                updateSystem((system) => ({
+                                  ...system,
+                                  soireeRulePolicies: system.soireeRulePolicies.map((p, i) =>
+                                    i === idx
+                                      ? {
+                                          ...p,
+                                          scoring: {
+                                            ...p.scoring,
+                                            matchWinMultiplier: Math.max(1, Number(e.target.value)),
+                                          },
+                                        }
+                                      : p
+                                  ),
+                                }))
+                              }
+                            />
+                          </label>
+                          <label>
+                            Bonus checkout finale
+                            <input
+                              className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-white"
+                              type="number"
+                              min={0}
+                              max={20}
+                              value={policy.scoring.checkoutBonusOverrides?.FINAL ?? 0}
+                              onChange={(e) =>
+                                updateSystem((system) => ({
+                                  ...system,
+                                  soireeRulePolicies: system.soireeRulePolicies.map((p, i) =>
+                                    i === idx
+                                      ? {
+                                          ...p,
+                                          scoring: {
+                                            ...p.scoring,
+                                            checkoutBonusOverrides: {
+                                              ...p.scoring.checkoutBonusOverrides,
+                                              FINAL: clampInt(Number(e.target.value), 0, 20),
+                                            },
+                                          },
+                                        }
+                                      : p
+                                  ),
+                                }))
+                              }
+                            />
+                          </label>
+                          <label>
+                            Podium points (1/2/3)
+                            <input
+                              className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-white"
+                              type="text"
+                              value={`${policy.scoring.podiumPointsOverride?.first ?? 0}/${policy.scoring.podiumPointsOverride?.second ?? 0}/${policy.scoring.podiumPointsOverride?.third ?? 0}`}
+                              onChange={(e) => {
+                                const [first, second, third] = e.target.value.split("/").map((v) => clampInt(Number(v), 0, 20));
+                                updateSystem((system) => ({
+                                  ...system,
+                                  soireeRulePolicies: system.soireeRulePolicies.map((p, i) =>
+                                    i === idx
+                                      ? {
+                                          ...p,
+                                          scoring: {
+                                            ...p.scoring,
+                                            podiumPointsOverride: {
+                                              first: Number.isFinite(first) ? first : 0,
+                                              second: Number.isFinite(second) ? second : 0,
+                                              third: Number.isFinite(third) ? third : 0,
+                                            },
+                                          },
+                                        }
+                                      : p
+                                  ),
+                                }));
+                              }}
+                            />
+                          </label>
+                        </div>
+
+                        <div className="mt-2 grid grid-cols-1 gap-2 text-xs">
+                          <label className="inline-flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 rounded border-white/20 bg-black"
+                              checked={policy.rebuy.lockAfterKnockoutStart}
+                              onChange={(e) =>
+                                updateSystem((system) => ({
+                                  ...system,
+                                  soireeRulePolicies: system.soireeRulePolicies.map((p, i) =>
+                                    i === idx
+                                      ? { ...p, rebuy: { ...p.rebuy, lockAfterKnockoutStart: e.target.checked } }
+                                      : p
+                                  ),
+                                }))
+                              }
+                            />
+                            Bloquer les re-buys dès le début des phases finales
+                          </label>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="rounded-xl border border-white/10 bg-black/30 p-3">
