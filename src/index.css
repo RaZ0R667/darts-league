@@ -235,6 +235,37 @@ body {
   background: linear-gradient(135deg, rgba(232, 121, 249, 0.16), rgba(0, 0, 0, 0.36));
 }
 
+.tv-broadcast-overlay {
+  position: relative;
+  overflow: hidden;
+  animation: tvOverlayIn 0.45s ease;
+}
+
+.tv-broadcast-overlay::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(108deg, transparent 12%, rgba(255, 255, 255, 0.2) 42%, transparent 72%);
+  transform: translateX(-130%);
+  animation: tvOverlaySweep 2.8s ease-in-out infinite;
+}
+
+.tv-broadcast-sponsor {
+  border-color: rgba(234, 179, 8, 0.34);
+  background: linear-gradient(135deg, rgba(234, 179, 8, 0.22), rgba(0, 0, 0, 0.4));
+}
+
+.tv-broadcast-pause {
+  border-color: rgba(239, 68, 68, 0.34);
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.22), rgba(0, 0, 0, 0.4));
+}
+
+.tv-broadcast-announce {
+  border-color: rgba(34, 211, 238, 0.34);
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.2), rgba(0, 0, 0, 0.4));
+}
+
 .app-shell.tv-mode::before {
   content: "";
   position: fixed;

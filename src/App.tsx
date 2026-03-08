@@ -30,6 +30,8 @@ type RulesProfile = "STANDARD" | "FUN" | "CUSTOM";
 type PresenceStatus = "HERE" | "LATE" | "ABSENT";
 type TvScene = "WARMUP" | "LIVE" | "FINALE" | "PODIUM";
 type PerformanceSort = "POWER" | "FORM" | "DYNAMIC" | "LOWS";
+type TvTab = Extract<AppTab, "SOIREE" | "CLASSEMENT" | "H2H">;
+type BroadcastOverlayKind = "" | "SPONSOR" | "PAUSE" | "ANNOUNCE";
 type AppTab =
   | "SOIREE"
   | "CLASSEMENT"
@@ -205,6 +207,9 @@ const RULES_PDF_NAME_KEY = "darts_league_rules_pdf_name_v1";
 const STORAGE_RECOVERY_KEY = "darts_league_recovery_v1";
 const STORAGE_HISTORY_KEY = "darts_league_history_v1";
 const MAX_STORAGE_HISTORY = 8;
+const TV_ROTATION_TABS_KEY = "darts_league_tv_rotation_tabs_v1";
+const TV_ROTATION_AUTO_KEY = "darts_league_tv_rotation_auto_v1";
+const TV_ROTATION_SPEED_KEY = "darts_league_tv_rotation_speed_v1";
 
 const SUPABASE_URL = (import.meta as any)?.env?.VITE_SUPABASE_URL ?? "";
 const SUPABASE_ANON_KEY = (import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY ?? "";
@@ -230,6 +235,14 @@ const PALETTE = [
   "#06b6d4",
   "#f43f5e",
 ];
+
+const TV_TAB_CATALOG: Array<{ tab: TvTab; label: string }> = [
+  { tab: "SOIREE", label: "Soirée" },
+  { tab: "CLASSEMENT", label: "Classement" },
+  { tab: "H2H", label: "Confrontations" },
+];
+
+const DEFAULT_TV_ROTATION_TABS: TvTab[] = ["SOIREE", "CLASSEMENT", "H2H"];
 
 function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now()}`;
@@ -1411,6 +1424,37 @@ export default function App() {
   const [tab, setTab] = useState<AppTab>("SOIREE");
   const [tvMode, setTvMode] = useState(false);
   const [, setTvIndex] = useState(0);
+  const [tvRotationTabs, setTvRotationTabs] = useState<TvTab[]>(() => {
+    try {
+      const raw = localStorage.getItem(TV_ROTATION_TABS_KEY);
+      if (!raw) return [...DEFAULT_TV_ROTATION_TABS];
+      const parsed = JSON.parse(raw) as string[];
+      const safe = Array.isArray(parsed)
+        ? parsed.filter((x): x is TvTab => x === "SOIREE" || x === "CLASSEMENT" || x === "H2H")
+        : [];
+      return safe.length ? safe : [...DEFAULT_TV_ROTATION_TABS];
+    } catch {
+      return [...DEFAULT_TV_ROTATION_TABS];
+    }
+  });
+  const [tvAutoRotateEnabled, setTvAutoRotateEnabled] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem(TV_ROTATION_AUTO_KEY);
+      return raw !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const [tvRotateEveryMs, setTvRotateEveryMs] = useState<number>(() => {
+    try {
+      const raw = Number(localStorage.getItem(TV_ROTATION_SPEED_KEY) ?? 12000);
+      return [8000, 12000, 20000].includes(raw) ? raw : 12000;
+    } catch {
+      return 12000;
+    }
+  });
+  const [tvBroadcastOverlayKind, setTvBroadcastOverlayKind] = useState<BroadcastOverlayKind>("");
+  const [tvBroadcastAnnouncement, setTvBroadcastAnnouncement] = useState("Annonce officielle");
   const [timelinePlay, setTimelinePlay] = useState(false);
   const [timelineStep, setTimelineStep] = useState(0);
   const [timelineSpeedMs, setTimelineSpeedMs] = useState(1200);
@@ -1584,6 +1628,14 @@ export default function App() {
       localStorage.setItem("dl_compact_mode", compactMode ? "1" : "0");
     } catch {}
   }, [compactMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TV_ROTATION_TABS_KEY, JSON.stringify(tvRotationTabs));
+      localStorage.setItem(TV_ROTATION_AUTO_KEY, tvAutoRotateEnabled ? "1" : "0");
+      localStorage.setItem(TV_ROTATION_SPEED_KEY, String(tvRotateEveryMs));
+    } catch {}
+  }, [tvRotationTabs, tvAutoRotateEnabled, tvRotateEveryMs]);
 
   useEffect(() => {
     try {
@@ -2104,8 +2156,11 @@ export default function App() {
     }
   }, [funLiveIndex, funLiveMatches.length]);
 
-  const tvTabs: Array<Extract<AppTab, "SOIREE" | "CLASSEMENT" | "H2H">> = ["SOIREE", "CLASSEMENT", "H2H"];
-  const tvLabels: Record<string, string> = {
+  const tvTabs = useMemo<TvTab[]>(
+    () => (tvRotationTabs.length ? tvRotationTabs : [...DEFAULT_TV_ROTATION_TABS]),
+    [tvRotationTabs]
+  );
+  const tvLabels: Record<TvTab, string> = {
     SOIREE: "Soirée",
     CLASSEMENT: "Classement",
     H2H: "Confrontations",
@@ -2221,16 +2276,17 @@ export default function App() {
   }, [tvMode, tab]);
 
   useEffect(() => {
-    if (!tvMode) return;
+    if (!tvMode || !tvAutoRotateEnabled || tvTabs.length <= 1) return;
     const handle = window.setInterval(() => {
-      setTvIndex((prev) => {
-        const next = (prev + 1) % tvTabs.length;
-        setTab(tvTabs[next]);
-        return next;
+      setTab((prevTab) => {
+        const current = tvTabs.indexOf(prevTab as TvTab);
+        const next = ((current >= 0 ? current : 0) + 1) % tvTabs.length;
+        setTvIndex(next);
+        return tvTabs[next];
       });
-    }, 12000);
+    }, tvRotateEveryMs);
     return () => window.clearInterval(handle);
-  }, [tvMode, tvTabs.length]);
+  }, [tvMode, tvAutoRotateEnabled, tvRotateEveryMs, tvTabs]);
 
   useEffect(() => {
     if (!tvMode || tab !== "SOIREE") return;
@@ -2278,10 +2334,48 @@ export default function App() {
 
       if (tvMode && !typingTarget && (isRight || isLeft)) {
         e.preventDefault();
-        const current = Math.max(0, tvTabs.indexOf(tab as (typeof tvTabs)[number]));
-        const delta = isRight ? 1 : -1;
-        const next = (current + delta + tvTabs.length) % tvTabs.length;
-        setTab(tvTabs[next]);
+        goToTvTab(isRight ? 1 : -1);
+        return;
+      }
+
+      if (tvMode && !typingTarget && (e.key === " " || e.code === "Space")) {
+        e.preventDefault();
+        setTvAutoRotateEnabled((v) => !v);
+        return;
+      }
+
+      if (tvMode && !typingTarget) {
+        const k = e.key.toLowerCase();
+        if (k === "s") {
+          e.preventDefault();
+          setBroadcastOverlay("SPONSOR");
+          return;
+        }
+        if (k === "p") {
+          e.preventDefault();
+          setBroadcastOverlay("PAUSE");
+          return;
+        }
+        if (k === "a") {
+          e.preventDefault();
+          setBroadcastOverlay("ANNOUNCE");
+          return;
+        }
+        if (k === "escape") {
+          e.preventDefault();
+          setTvBroadcastOverlayKind("");
+          return;
+        }
+      }
+
+      if (tvMode && !typingTarget && (e.key === "PageDown" || e.key === "]")) {
+        e.preventDefault();
+        goToTvTab(1);
+        return;
+      }
+      if (tvMode && !typingTarget && (e.key === "PageUp" || e.key === "[")) {
+        e.preventDefault();
+        goToTvTab(-1);
         return;
       }
 
@@ -2333,7 +2427,40 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [readOnlyMode, tvMode, tab, liveSchedule.nextMatch, currentSoireeLocked, soireeTiming.startedAt, soireeTiming.endedAt]);
+  }, [readOnlyMode, tvMode, liveSchedule.nextMatch, currentSoireeLocked, soireeTiming.startedAt, soireeTiming.endedAt, tvTabs, tab]);
+
+  function goToTvTab(delta: -1 | 1) {
+    if (tvTabs.length === 0) return;
+    const current = tvTabs.indexOf(tab as TvTab);
+    const next = ((current >= 0 ? current : 0) + delta + tvTabs.length) % tvTabs.length;
+    setTvIndex(next);
+    setTab(tvTabs[next]);
+  }
+
+  function toggleTvRotationTab(tabId: TvTab) {
+    setTvRotationTabs((prev) => {
+      if (prev.includes(tabId)) {
+        const next = prev.filter((x) => x !== tabId);
+        return next.length ? next : prev;
+      }
+      return [...prev, tabId];
+    });
+  }
+
+  function moveTvRotationTab(index: number, delta: -1 | 1) {
+    setTvRotationTabs((prev) => {
+      const target = index + delta;
+      if (index < 0 || index >= prev.length || target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      const [item] = next.splice(index, 1);
+      next.splice(target, 0, item);
+      return next;
+    });
+  }
+
+  function setBroadcastOverlay(kind: BroadcastOverlayKind) {
+    setTvBroadcastOverlayKind((prev) => (prev === kind ? "" : kind));
+  }
 
   function updateSeason(mutator: (season: Season) => Season) {
     setState((prev) => {
@@ -3923,7 +4050,7 @@ export default function App() {
               <Pill>Soirées: {currentSeason.soirees.length}</Pill>
               {readOnlyMode && <Pill color="#eab308">Lecture seule</Pill>}
               {tvMode && <Pill color="#38bdf8">MODE TV</Pill>}
-              {tvMode && <Pill>Écran: {tvLabels[tab] ?? tab}</Pill>}
+              {tvMode && <Pill>Écran: {tvTabs.includes(tab as TvTab) ? tvLabels[tab as TvTab] : tab}</Pill>}
               {tab === "SOIREE" && finalNightMode && (
                 <Pill color="#f97316">
                   {activeSoireeRulePolicy?.label || "Règles spéciales"} • Soirée {activePolicySoireeNumber}
@@ -4012,6 +4139,95 @@ export default function App() {
               <Pill color={tvScene === "PODIUM" ? "#eab308" : tvScene === "FINALE" ? "#f97316" : tvScene === "WARMUP" ? "#06b6d4" : "#22c55e"}>
                 {tvScene}
               </Pill>
+            </div>
+          </div>
+        )}
+
+        {tvMode && !readOnlyMode && (
+          <div className="mb-4 rounded-2xl border border-white/10 bg-black/30 p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant={tvAutoRotateEnabled ? "primary" : "ghost"} onClick={() => setTvAutoRotateEnabled((v) => !v)}>
+                {tvAutoRotateEnabled ? "Auto ON" : "Auto OFF"} (Espace)
+              </Button>
+              <div className="w-44">
+                <Select
+                  value={String(tvRotateEveryMs)}
+                  onChange={(v) => setTvRotateEveryMs([8000, 12000, 20000].includes(Number(v)) ? Number(v) : 12000)}
+                  options={["8000", "12000", "20000"]}
+                />
+              </div>
+              <Button variant="ghost" onClick={() => goToTvTab(-1)}>
+                Précédent (←)
+              </Button>
+              <Button variant="ghost" onClick={() => goToTvTab(1)}>
+                Suivant (→)
+              </Button>
+            </div>
+            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+              {TV_TAB_CATALOG.map((item) => {
+                const enabled = tvRotationTabs.includes(item.tab);
+                const idx = tvRotationTabs.indexOf(item.tab);
+                return (
+                  <div key={item.tab} className="rounded-xl border border-white/10 bg-black/20 p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="inline-flex items-center gap-2 text-xs">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-white/20 bg-black"
+                          checked={enabled}
+                          onChange={() => toggleTvRotationTab(item.tab)}
+                        />
+                        {item.label}
+                      </label>
+                      {enabled && (
+                        <div className="flex gap-1">
+                          <Button variant="ghost" onClick={() => moveTvRotationTab(idx, -1)} disabled={idx <= 0}>
+                            ↑
+                          </Button>
+                          <Button variant="ghost" onClick={() => moveTvRotationTab(idx, 1)} disabled={idx < 0 || idx >= tvRotationTabs.length - 1}>
+                            ↓
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button variant={tvBroadcastOverlayKind === "SPONSOR" ? "primary" : "ghost"} onClick={() => setBroadcastOverlay("SPONSOR")}>
+                Sponsor (S)
+              </Button>
+              <Button variant={tvBroadcastOverlayKind === "PAUSE" ? "primary" : "ghost"} onClick={() => setBroadcastOverlay("PAUSE")}>
+                Pause (P)
+              </Button>
+              <Button variant={tvBroadcastOverlayKind === "ANNOUNCE" ? "primary" : "ghost"} onClick={() => setBroadcastOverlay("ANNOUNCE")}>
+                Annonce (A)
+              </Button>
+              <Button variant="ghost" onClick={() => setTvBroadcastOverlayKind("")}>
+                Effacer (Esc)
+              </Button>
+              <input
+                className="min-w-[220px] flex-1 rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/25"
+                value={tvBroadcastAnnouncement}
+                onChange={(e) => setTvBroadcastAnnouncement(e.target.value)}
+                placeholder="Texte annonce"
+              />
+            </div>
+          </div>
+        )}
+
+        {tvMode && tvBroadcastOverlayKind && (
+          <div className={`mb-4 rounded-2xl border px-4 py-3 tv-broadcast-overlay tv-broadcast-${tvBroadcastOverlayKind.toLowerCase()}`}>
+            <div className="text-[11px] uppercase tracking-[0.28em] text-white/70">
+              {tvBroadcastOverlayKind === "SPONSOR" ? "Sponsor" : tvBroadcastOverlayKind === "PAUSE" ? "Pause Technique" : "Annonce Officielle"}
+            </div>
+            <div className="mt-1 text-lg font-extrabold">
+              {tvBroadcastOverlayKind === "SPONSOR"
+                ? "Merci à nos sponsors"
+                : tvBroadcastOverlayKind === "PAUSE"
+                  ? "Pause en cours • reprise imminente"
+                  : normName(tvBroadcastAnnouncement) || "Annonce officielle"}
             </div>
           </div>
         )}
