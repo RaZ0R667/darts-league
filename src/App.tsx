@@ -30,6 +30,7 @@ type RulesProfile = "STANDARD" | "FUN" | "CUSTOM";
 type PresenceStatus = "HERE" | "LATE" | "ABSENT";
 type TvScene = "WARMUP" | "LIVE" | "FINALE" | "PODIUM";
 type PerformanceSort = "POWER" | "FORM" | "DYNAMIC" | "LOWS";
+type TournamentFormat = "CLASSIC_POOLS" | "ROUND_ROBIN" | "SWISS_LITE" | "DOUBLE_ELIM_LITE";
 type TvTab = Extract<AppTab, "SOIREE" | "CLASSEMENT" | "H2H">;
 type BroadcastOverlayKind = "" | "SPONSOR" | "PAUSE" | "ANNOUNCE";
 type AppTab =
@@ -95,6 +96,7 @@ type RebuyMatch = {
 type Soiree = {
   id: string;
   number: number;
+  tournamentFormat?: TournamentFormat;
   dateLabel?: string;
   createdAt: number;
   startedAt?: number;
@@ -471,6 +473,145 @@ function buildRoundRobinMatches(players: string[], format: 301 | 501): CoreMatch
   }));
 }
 
+function getTournamentFormatLabel(format: TournamentFormat) {
+  if (format === "ROUND_ROBIN") return "Round Robin";
+  if (format === "SWISS_LITE") return "Swiss Lite";
+  if (format === "DOUBLE_ELIM_LITE") return "Double Elim Lite";
+  return "Poules classiques";
+}
+
+function createPoolMatch(
+  order: number,
+  a: string,
+  b: string,
+  pool: "A" | "B" | null,
+  format: 301 | 501
+): CoreMatch {
+  return {
+    id: uid("m"),
+    order,
+    phase: "POULE",
+    status: "PENDING",
+    pool,
+    format,
+    bo: "BO3",
+    maxTurns: 10,
+    a,
+    b,
+    winner: "",
+    checkout100: false,
+    checkoutBy: "",
+  };
+}
+
+function createFinalPhases(startOrder: number, poolFormat: 301 | 501, finalFormat: 301 | 501): CoreMatch[] {
+  return [
+    {
+      id: uid("m"),
+      order: startOrder,
+      phase: "DEMI",
+      status: "PENDING",
+      pool: null,
+      format: poolFormat,
+      bo: "BO3",
+      maxTurns: 10,
+      a: "",
+      b: "",
+      winner: "",
+      checkout100: false,
+      checkoutBy: "",
+    },
+    {
+      id: uid("m"),
+      order: startOrder + 1,
+      phase: "DEMI",
+      status: "PENDING",
+      pool: null,
+      format: poolFormat,
+      bo: "BO3",
+      maxTurns: 10,
+      a: "",
+      b: "",
+      winner: "",
+      checkout100: false,
+      checkoutBy: "",
+    },
+    {
+      id: uid("m"),
+      order: startOrder + 2,
+      phase: "PFINAL",
+      status: "PENDING",
+      pool: null,
+      format: poolFormat,
+      bo: "BO3",
+      maxTurns: 10,
+      a: "",
+      b: "",
+      winner: "",
+      checkout100: false,
+      checkoutBy: "",
+    },
+    {
+      id: uid("m"),
+      order: startOrder + 3,
+      phase: "FINAL",
+      status: "PENDING",
+      pool: null,
+      format: finalFormat,
+      bo: "BO3",
+      maxTurns: 10,
+      a: "",
+      b: "",
+      winner: "",
+      checkout100: false,
+      checkoutBy: "",
+    },
+  ];
+}
+
+function buildGreedyLimitedPairs(players: string[], targetMatchesPerPlayer: number) {
+  const clean = players.map(normName).filter(isNonEmptyString);
+  const allPairs: Array<[string, string]> = [];
+  for (let i = 0; i < clean.length; i++) {
+    for (let j = i + 1; j < clean.length; j++) {
+      allPairs.push([clean[i], clean[j]]);
+    }
+  }
+  const shuffled = shuffle(allPairs);
+  const counts = new Map<string, number>();
+  clean.forEach((p) => counts.set(p, 0));
+  const selected: Array<[string, string]> = [];
+
+  for (const [a, b] of shuffled) {
+    const ca = counts.get(a) ?? 0;
+    const cb = counts.get(b) ?? 0;
+    if (ca >= targetMatchesPerPlayer || cb >= targetMatchesPerPlayer) continue;
+    selected.push([a, b]);
+    counts.set(a, ca + 1);
+    counts.set(b, cb + 1);
+    const done = clean.every((p) => (counts.get(p) ?? 0) >= targetMatchesPerPlayer);
+    if (done) break;
+  }
+
+  // Safety pass: if some players are still under target, add best possible remaining pairs.
+  for (const p of clean) {
+    while ((counts.get(p) ?? 0) < targetMatchesPerPlayer) {
+      const candidate = shuffled.find(([a, b]) => {
+        if (selected.some(([sa, sb]) => (sa === a && sb === b) || (sa === b && sb === a))) return false;
+        if (a !== p && b !== p) return false;
+        const other = a === p ? b : a;
+        return (counts.get(other) ?? 0) < targetMatchesPerPlayer + 1;
+      });
+      if (!candidate) break;
+      selected.push(candidate);
+      counts.set(candidate[0], (counts.get(candidate[0]) ?? 0) + 1);
+      counts.set(candidate[1], (counts.get(candidate[1]) ?? 0) + 1);
+    }
+  }
+
+  return selected;
+}
+
 function poolMatchesFor4(players: string[], pool: "A" | "B"): CoreMatch[] {
   const valid = players.map(normName).filter(isNonEmptyString);
   const pairs: Array<[string, string]> = [];
@@ -511,6 +652,10 @@ function isFairSoireeMode(soiree: Soiree) {
   return (soiree.absentPlayers?.length ?? 0) > 0;
 }
 
+function useGlobalTop4Qualification(soiree: Soiree) {
+  return isFairSoireeMode(soiree) || soiree.tournamentFormat === "ROUND_ROBIN" || soiree.tournamentFormat === "SWISS_LITE" || soiree.tournamentFormat === "DOUBLE_ELIM_LITE";
+}
+
 function getMatchWinPointsForSoiree(match: CoreMatch, rules: RulesConfig, ctx: ResolvedRuleContext) {
   const base = match.phase === "PFINAL" ? rules.smallFinalPoints : rules.winPoints;
   return base * ctx.matchWinMultiplier;
@@ -534,7 +679,7 @@ function computePoolRows(
   const players = soiree.pools[pool];
   const relevant = soiree.matches.filter((m: CoreMatch) => m.phase === "POULE" && m.pool === pool);
   const { pts, wins, bonus } = computePointsFromMatches(relevant, [], soiree.number, season, rules, rulePolicies);
-  const fairMode = isFairSoireeMode(soiree);
+  const fairMode = useGlobalTop4Qualification(soiree);
 
   const playedMap = new Map<string, number>();
   for (const p of players) playedMap.set(p, 0);
@@ -919,6 +1064,7 @@ function makeEmptySoiree(number = 1): Soiree {
   return {
     id: uid("s"),
     number,
+    tournamentFormat: "CLASSIC_POOLS",
     createdAt: Date.now(),
     pools: { A: [], B: [] },
     matches: [],
@@ -1049,6 +1195,12 @@ function sanitizeState(raw: any): AppState {
         return {
           id: normName(s?.id) || uid("s"),
           number: clampInt(Number(s?.number ?? idx + 1), 1, 999),
+          tournamentFormat:
+            s?.tournamentFormat === "ROUND_ROBIN" ||
+            s?.tournamentFormat === "SWISS_LITE" ||
+            s?.tournamentFormat === "DOUBLE_ELIM_LITE"
+              ? s.tournamentFormat
+              : "CLASSIC_POOLS",
           dateLabel: normName(s?.dateLabel) || undefined,
           createdAt: Number(s?.createdAt ?? Date.now()),
           startedAt: Number.isFinite(Number(s?.startedAt)) ? Number(s.startedAt) : undefined,
@@ -1455,6 +1607,7 @@ export default function App() {
   });
   const [tvBroadcastOverlayKind, setTvBroadcastOverlayKind] = useState<BroadcastOverlayKind>("");
   const [tvBroadcastAnnouncement, setTvBroadcastAnnouncement] = useState("Annonce officielle");
+  const [operatorFullscreen, setOperatorFullscreen] = useState(false);
   const [timelinePlay, setTimelinePlay] = useState(false);
   const [timelineStep, setTimelineStep] = useState(0);
   const [timelineSpeedMs, setTimelineSpeedMs] = useState(1200);
@@ -1490,6 +1643,7 @@ export default function App() {
   });
   const [showAttendanceModal, setShowAttendanceModal] = useState(false);
   const [absentPlayersSelection, setAbsentPlayersSelection] = useState<string[]>([]);
+  const [newSoireeFormat, setNewSoireeFormat] = useState<TournamentFormat>("CLASSIC_POOLS");
   const [snapshots, setSnapshots] = useState<SnapshotEntry[]>(() => loadSnapshots());
   const [readOnlyLink, setReadOnlyLink] = useState("");
   const [syncCode, setSyncCode] = useState<string>(() => {
@@ -1750,6 +1904,7 @@ export default function App() {
   const closureSeason = closureContext?.season ?? currentSeason;
   const currentSoireeLocked = Boolean(currentSoiree?.locked);
   const fairSoireeMode = useMemo(() => isFairSoireeMode(currentSoiree), [currentSoiree]);
+  const globalTop4Mode = useMemo(() => useGlobalTop4Qualification(currentSoiree), [currentSoiree]);
   const currentSoireeRuleContext = useMemo(
     () => resolveSoireeRuleContext(currentSoiree, currentSeason, activeSoireeRulePolicies),
     [currentSoiree, currentSeason, activeSoireeRulePolicies]
@@ -2024,7 +2179,7 @@ export default function App() {
 
   const liveSoireeRanking = useMemo(() => {
     const participants = uniq([...currentSoiree.pools.A, ...currentSoiree.pools.B].map(normName)).filter(isNonEmptyString);
-    const { pts, wins } = computePointsFromMatches(
+    const { pts, wins, bonus } = computePointsFromMatches(
       currentSoiree.matches,
       currentSoiree.rebuys,
       currentSoiree.number,
@@ -2032,9 +2187,14 @@ export default function App() {
       effectiveRules,
       activeSoireeRulePolicies
     );
-    const rows = participants.map((p: string) => ({ name: p, pts: pts.get(p) ?? 0, wins: wins.get(p) ?? 0 }));
-    rows.sort((a: { name: string; pts: number; wins: number }, b: { name: string; pts: number; wins: number }) =>
-      b.pts - a.pts || b.wins - a.wins || a.name.localeCompare(b.name)
+    const rows = participants.map((p: string) => ({
+      name: p,
+      pts: pts.get(p) ?? 0,
+      wins: wins.get(p) ?? 0,
+      bonus: bonus.get(p) ?? 0,
+    }));
+    rows.sort((a: { name: string; pts: number; wins: number; bonus: number }, b: { name: string; pts: number; wins: number; bonus: number }) =>
+      b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name)
     );
     return rows;
   }, [
@@ -2048,6 +2208,141 @@ export default function App() {
     activeSoireeRulePolicies,
   ]);
 
+  const premiumAnalytics = useMemo(() => {
+    const participants = uniq([...currentSoiree.pools.A, ...currentSoiree.pools.B].map(normName)).filter(isNonEmptyString);
+    const matches = currentSoiree.matches;
+    const unresolved = matches.filter((m: CoreMatch) => !normName(m.winner) && normName(m.a) && normName(m.b));
+
+    const byPlayerCounts = new Map<string, { p1: number; p2: number; p3: number }>();
+    participants.forEach((p) => byPlayerCounts.set(p, { p1: 0, p2: 0, p3: 0 }));
+
+    const rankFromRows = (rows: Array<{ name: string }>) => rows.map((r) => r.name);
+    const baseRows = computeSoireeRankingRows(currentSoiree, currentSeason, effectiveRules, activeSoireeRulePolicies);
+    const baseTop3 = rankFromRows(baseRows).slice(0, 3);
+
+    if (unresolved.length === 0) {
+      if (baseTop3[0]) byPlayerCounts.get(baseTop3[0])!.p1 += 1;
+      if (baseTop3[1]) byPlayerCounts.get(baseTop3[1])!.p2 += 1;
+      if (baseTop3[2]) byPlayerCounts.get(baseTop3[2])!.p3 += 1;
+    } else {
+      const runs = 300;
+      for (let run = 0; run < runs; run++) {
+        const simulatedMatches = matches.map((m: CoreMatch) => {
+          if (normName(m.winner) || !m.a || !m.b) return m;
+          const winner = Math.random() < 0.5 ? m.a : m.b;
+          return { ...m, winner, status: "VALIDATED" as MatchStatus };
+        });
+        const simulatedRows = computeSoireeRankingRows(
+          { ...currentSoiree, matches: simulatedMatches },
+          currentSeason,
+          effectiveRules,
+          activeSoireeRulePolicies
+        );
+        const top3 = rankFromRows(simulatedRows).slice(0, 3);
+        if (top3[0]) byPlayerCounts.get(top3[0])!.p1 += 1;
+        if (top3[1]) byPlayerCounts.get(top3[1])!.p2 += 1;
+        if (top3[2]) byPlayerCounts.get(top3[2])!.p3 += 1;
+      }
+
+      for (const p of participants) {
+        const c = byPlayerCounts.get(p)!;
+        c.p1 = Math.round((c.p1 / runs) * 1000) / 10;
+        c.p2 = Math.round((c.p2 / runs) * 1000) / 10;
+        c.p3 = Math.round((c.p3 / runs) * 1000) / 10;
+      }
+    }
+
+    const phaseStats = new Map<string, Record<Phase, { played: number; wins: number }>>();
+    participants.forEach((p) =>
+      phaseStats.set(p, {
+        POULE: { played: 0, wins: 0 },
+        DEMI: { played: 0, wins: 0 },
+        PFINAL: { played: 0, wins: 0 },
+        FINAL: { played: 0, wins: 0 },
+      })
+    );
+
+    const rankMap = new Map(seasonStats.table.map((r, idx: number) => [r.name, idx + 1] as const));
+    const difficultyMap = new Map<string, { total: number; count: number }>();
+    participants.forEach((p) => difficultyMap.set(p, { total: 0, count: 0 }));
+
+    for (const m of matches) {
+      const a = normName(m.a);
+      const b = normName(m.b);
+      if (!a || !b) continue;
+      const w = normName(m.winner);
+      const byA = phaseStats.get(a);
+      const byB = phaseStats.get(b);
+      if (byA) byA[m.phase].played += 1;
+      if (byB) byB[m.phase].played += 1;
+      if (w && (w === a || w === b)) {
+        const loser = w === a ? b : a;
+        const bucket = phaseStats.get(w);
+        if (bucket) bucket[m.phase].wins += 1;
+        const oppRank = rankMap.get(loser) ?? participants.length;
+        const strength = participants.length + 1 - oppRank;
+        const d = difficultyMap.get(w);
+        if (d) {
+          d.total += strength;
+          d.count += 1;
+        }
+      }
+    }
+
+    const mvpRows = participants.map((p) => {
+      const row = liveSoireeRanking.find((x) => x.name === p);
+      const phases = phaseStats.get(p)!;
+      const clutchWins = phases.FINAL.wins * 4 + phases.DEMI.wins * 2 + phases.PFINAL.wins;
+      const score = Math.round(((row?.pts ?? 0) * 4 + (row?.wins ?? 0) * 3 + clutchWins + (row?.bonus ?? 0) * 2) * 10) / 10;
+      return { player: p, score, pts: row?.pts ?? 0, wins: row?.wins ?? 0, bonus: row?.bonus ?? 0 };
+    });
+    mvpRows.sort((a, b) => b.score - a.score || b.pts - a.pts || a.player.localeCompare(b.player));
+
+    const difficulty = participants
+      .map((p) => {
+        const d = difficultyMap.get(p)!;
+        const avg = d.count > 0 ? Math.round((d.total / d.count) * 100) / 100 : 0;
+        return { player: p, avgStrength: avg, wins: d.count };
+      })
+      .sort((a, b) => b.avgStrength - a.avgStrength || b.wins - a.wins || a.player.localeCompare(b.player));
+
+    const phasePerformance = participants.map((p) => {
+      const phases = phaseStats.get(p)!;
+      const view = (phase: Phase) => {
+        const played = phases[phase].played;
+        const wins = phases[phase].wins;
+        return {
+          played,
+          wins,
+          rate: played > 0 ? Math.round((wins / played) * 1000) / 10 : 0,
+        };
+      };
+      return { player: p, POULE: view("POULE"), DEMI: view("DEMI"), PFINAL: view("PFINAL"), FINAL: view("FINAL") };
+    });
+
+    const podiumProbabilities = participants
+      .map((p) => {
+        const c = byPlayerCounts.get(p)!;
+        const top3 = Math.round(((c.p1 + c.p2 + c.p3) * 10)) / 10;
+        return { player: p, p1: c.p1, p2: c.p2, p3: c.p3, top3 };
+      })
+      .sort((a, b) => b.top3 - a.top3 || b.p1 - a.p1 || a.player.localeCompare(b.player));
+
+    return {
+      podiumProbabilities,
+      mvp: mvpRows,
+      difficulty,
+      phasePerformance,
+    };
+  }, [
+    currentSoiree,
+    currentSeason,
+    effectiveRules,
+    activeSoireeRulePolicies,
+    seasonStats.table,
+    liveSoireeRanking,
+  ]);
+
   const tvLiveFocus = useMemo(() => {
     const running = currentSoiree.matches
       .filter((m: CoreMatch) => Boolean(m.startedAt) && !normName(m.winner))
@@ -2059,6 +2354,7 @@ export default function App() {
     if (!flowMatchId) return null;
     return currentSoiree.matches.find((m: CoreMatch) => m.id === flowMatchId) ?? null;
   }, [flowMatchId, currentSoiree.matches]);
+  const operatorFocusMatch = flowCurrentMatch ?? liveSchedule.nextMatch ?? null;
 
 
   const currentPoolStandings = useMemo(() => {
@@ -2314,6 +2610,11 @@ export default function App() {
   }, [tvMode, tab, tvScene]);
 
   useEffect(() => {
+    if (!tvMode) return;
+    setOperatorFullscreen(false);
+  }, [tvMode]);
+
+  useEffect(() => {
     const isTypingTarget = (target: EventTarget | null) => {
       const el = target as HTMLElement | null;
       if (!el) return false;
@@ -2364,6 +2665,20 @@ export default function App() {
         if (k === "escape") {
           e.preventDefault();
           setTvBroadcastOverlayKind("");
+          return;
+        }
+      }
+
+      if (!typingTarget) {
+        const k = e.key.toLowerCase();
+        if (!tvMode && !readOnlyMode && k === "o") {
+          e.preventDefault();
+          setOperatorFullscreen((v) => !v);
+          return;
+        }
+        if (k === "escape" && operatorFullscreen) {
+          e.preventDefault();
+          setOperatorFullscreen(false);
           return;
         }
       }
@@ -2427,7 +2742,7 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [readOnlyMode, tvMode, liveSchedule.nextMatch, currentSoireeLocked, soireeTiming.startedAt, soireeTiming.endedAt, tvTabs, tab]);
+  }, [readOnlyMode, tvMode, liveSchedule.nextMatch, currentSoireeLocked, soireeTiming.startedAt, soireeTiming.endedAt, tvTabs, tab, operatorFullscreen]);
 
   function goToTvTab(delta: -1 | 1) {
     if (tvTabs.length === 0) return;
@@ -3193,6 +3508,7 @@ export default function App() {
       return;
     }
     setAbsentPlayersSelection([]);
+    setNewSoireeFormat("CLASSIC_POOLS");
     setShowAttendanceModal(true);
   }
 
@@ -3320,7 +3636,7 @@ export default function App() {
     });
   }
 
-  function startNewSoiree(absentPlayers: string[] = []) {
+  function startNewSoiree(absentPlayers: string[] = [], requestedFormat: TournamentFormat = newSoireeFormat) {
     const absents = absentPlayers.map(normName).filter(isNonEmptyString);
     const presentPlayers = currentSeason.players.filter((p) => !absents.includes(p));
 
@@ -3344,96 +3660,53 @@ export default function App() {
     updateSeason((season) => {
       const nextNumber = Math.max(...season.soirees.map((s) => s.number)) + 1;
       const players = season.players.filter((p) => presentPlayers.includes(p));
+      const chosenFormat: TournamentFormat = requestedFormat;
 
-      let pools: { A: string[]; B: string[] };
-      if (nextNumber <= 2) {
-        const sh = shuffle(players);
-        const split = Math.ceil(sh.length / 2);
-        pools = { A: sh.slice(0, split), B: sh.slice(split) };
+      let pools: { A: string[]; B: string[] } = { A: [], B: [] };
+      let inter: CoreMatch[] = [];
+
+      if (chosenFormat === "CLASSIC_POOLS") {
+        if (nextNumber <= 2) {
+          const sh = shuffle(players);
+          const split = Math.ceil(sh.length / 2);
+          pools = { A: sh.slice(0, split), B: sh.slice(split) };
+        } else {
+          const ranked = aggregateSeasonStats(season, effectiveRules, activeSoireeRulePolicies)
+            .table
+            .map((x) => x.name)
+            .filter((name) => players.includes(name));
+          const A: string[] = [];
+          const B: string[] = [];
+          ranked.forEach((name, idx) => {
+            if (idx % 2 === 0) A.push(name);
+            else B.push(name);
+          });
+          pools = { A, B };
+        }
+
+        const poolA = poolMatchesFor4(pools.A, "A").map((m) => ({ ...m, format: effectiveRules.defaultPoolFormat }));
+        const poolB = poolMatchesFor4(pools.B, "B").map((m) => ({ ...m, format: effectiveRules.defaultPoolFormat }));
+        inter = interleavePools(poolA, poolB);
+      } else if (chosenFormat === "ROUND_ROBIN") {
+        pools = { A: [...players], B: [] };
+        const rrPairs = buildRoundRobinMatches(players, effectiveRules.defaultPoolFormat);
+        inter = rrPairs.map((m, idx) => ({ ...m, order: idx + 1, pool: "A", status: "PENDING" }));
+      } else if (chosenFormat === "SWISS_LITE") {
+        pools = { A: [...players], B: [] };
+        const pairs = buildGreedyLimitedPairs(players, 3);
+        inter = pairs.map(([a, b], idx) => createPoolMatch(idx + 1, a, b, "A", effectiveRules.defaultPoolFormat));
       } else {
-        const ranked = aggregateSeasonStats(season, effectiveRules, activeSoireeRulePolicies)
-          .table
-          .map((x) => x.name)
-          .filter((name) => players.includes(name));
-        const A: string[] = [];
-        const B: string[] = [];
-        ranked.forEach((name, idx) => {
-          if (idx % 2 === 0) A.push(name);
-          else B.push(name);
-        });
-        pools = { A, B };
+        pools = { A: [...players], B: [] };
+        const pairs = buildGreedyLimitedPairs(players, 2);
+        inter = pairs.map(([a, b], idx) => createPoolMatch(idx + 1, a, b, "A", effectiveRules.defaultPoolFormat));
       }
 
-      const poolA = poolMatchesFor4(pools.A, "A").map((m) => ({ ...m, format: effectiveRules.defaultPoolFormat }));
-      const poolB = poolMatchesFor4(pools.B, "B").map((m) => ({ ...m, format: effectiveRules.defaultPoolFormat }));
-      const inter = interleavePools(poolA, poolB);
-
-      const finals: CoreMatch[] = [
-        {
-          id: uid("m"),
-          order: inter.length + 1,
-          phase: "DEMI",
-          status: "PENDING",
-          pool: null,
-          format: effectiveRules.defaultPoolFormat,
-          bo: "BO3",
-          maxTurns: 10,
-          a: "",
-          b: "",
-          winner: "",
-          checkout100: false,
-          checkoutBy: "",
-        },
-        {
-          id: uid("m"),
-          order: inter.length + 2,
-          phase: "DEMI",
-          status: "PENDING",
-          pool: null,
-          format: effectiveRules.defaultPoolFormat,
-          bo: "BO3",
-          maxTurns: 10,
-          a: "",
-          b: "",
-          winner: "",
-          checkout100: false,
-          checkoutBy: "",
-        },
-        {
-          id: uid("m"),
-          order: inter.length + 3,
-          phase: "PFINAL",
-          status: "PENDING",
-          pool: null,
-          format: effectiveRules.defaultPoolFormat,
-          bo: "BO3",
-          maxTurns: 10,
-          a: "",
-          b: "",
-          winner: "",
-          checkout100: false,
-          checkoutBy: "",
-        },
-        {
-          id: uid("m"),
-          order: inter.length + 4,
-          phase: "FINAL",
-          status: "PENDING",
-          pool: null,
-          format: effectiveRules.defaultFinalFormat,
-          bo: "BO3",
-          maxTurns: 10,
-          a: "",
-          b: "",
-          winner: "",
-          checkout100: false,
-          checkoutBy: "",
-        },
-      ];
+      const finals = createFinalPhases(inter.length + 1, effectiveRules.defaultPoolFormat, effectiveRules.defaultFinalFormat);
 
       const newSoiree: Soiree = {
         id: uid("s"),
         number: nextNumber,
+        tournamentFormat: chosenFormat,
         createdAt: Date.now(),
         absentPlayers: absents,
         attendance: players.concat(absents).reduce((acc, p) => {
@@ -3455,7 +3728,7 @@ export default function App() {
     });
 
     setShowAttendanceModal(false);
-    logAudit("Nouvelle soirée générée", `${presentPlayers.length} joueurs présents`);
+    logAudit("Nouvelle soirée générée", `${presentPlayers.length} joueurs présents • ${getTournamentFormatLabel(requestedFormat)}`);
 
     setTimeout(() => {
       const max = Math.max(...currentSeason.soirees.map((s: Soiree) => s.number)) + 1;
@@ -3557,7 +3830,7 @@ export default function App() {
     if (currentSoireeLocked) return;
     const A = computePoolRows(currentSoiree, "A", currentSeason, effectiveRules, activeSoireeRulePolicies);
     const B = computePoolRows(currentSoiree, "B", currentSeason, effectiveRules, activeSoireeRulePolicies);
-    const fairMode = isFairSoireeMode(currentSoiree);
+    const fairMode = useGlobalTop4Qualification(currentSoiree);
 
     const ov = currentSoiree.qualifiersOverride ?? {};
     const A1 = ov.A1 || (A[0]?.name ?? "");
@@ -4069,7 +4342,12 @@ export default function App() {
               </Button>
             )}
             {!tvMode && !readOnlyMode && (
-            <Button variant="ghost" onClick={() => openAttendanceModal()}>
+              <Button variant={operatorFullscreen ? "primary" : "ghost"} onClick={() => setOperatorFullscreen((v) => !v)}>
+                {operatorFullscreen ? "Quitter Opérateur" : "Mode Opérateur"}
+              </Button>
+            )}
+            {!tvMode && !readOnlyMode && (
+              <Button variant="ghost" onClick={() => openAttendanceModal()}>
               Générer une soirée
             </Button>
             )}
@@ -4318,7 +4596,10 @@ export default function App() {
 
         {tab !== "PARAMS" && tab !== "SAISONS" && tab !== "FUN" && tab !== "REGLES" && (
           <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 sm:flex-row sm:items-center sm:justify-between tv-hide">
-            <div className="text-sm text-white/70">Soirée sélectionnée</div>
+            <div className="flex items-center gap-2 text-sm text-white/70">
+              <span>Soirée sélectionnée</span>
+              <Pill>{getTournamentFormatLabel(currentSoiree.tournamentFormat ?? "CLASSIC_POOLS")}</Pill>
+            </div>
             <div className="w-full sm:w-56">
               <Select
                 value={String(selectedSoireeNumber)}
@@ -4709,7 +4990,7 @@ export default function App() {
 
               <Section
                 title="Classement des poules"
-                right={fairSoireeMode ? <Pill color="#eab308">Mode équité: moyenne / match</Pill> : undefined}
+                right={globalTop4Mode ? <Pill color="#eab308">Mode Top 4 global: moyenne / match</Pill> : undefined}
               >
                 <div className="hidden md:grid grid-cols-1 gap-3">
                   {(["A", "B"] as const).map((pool) => (
@@ -4721,7 +5002,7 @@ export default function App() {
                             <th className="py-1 text-left">#</th>
                             <th className="py-1 text-left">Joueur</th>
                             <th className="py-1 text-right">Pts</th>
-                            {fairSoireeMode && <th className="py-1 text-right">Avg</th>}
+                            {globalTop4Mode && <th className="py-1 text-right">Avg</th>}
                             <th className="py-1 text-right">V</th>
                             <th className="py-1 text-right">B</th>
                           </tr>
@@ -4732,7 +5013,7 @@ export default function App() {
                               <td className="py-1">{idx + 1}</td>
                               <td className="py-1 font-semibold">{r.name}</td>
                               <td className="py-1 text-right">{r.pts}</td>
-                              {fairSoireeMode && <td className="py-1 text-right">{r.avg.toFixed(2)}</td>}
+                              {globalTop4Mode && <td className="py-1 text-right">{r.avg.toFixed(2)}</td>}
                               <td className="py-1 text-right">{r.wins}</td>
                               <td className="py-1 text-right">{r.bonus}</td>
                             </tr>
@@ -4748,7 +5029,7 @@ export default function App() {
                     <div key={pool} className="rounded-xl border border-white/10 bg-black/30 p-3">
                       <div className="flex items-center justify-between">
                         <div className="font-semibold">Poule {pool}</div>
-                        <Pill>{fairSoireeMode ? "Avg ➜ Pts ➜ V ➜ Bonus" : "Pts ➜ V ➜ Bonus"}</Pill>
+                        <Pill>{globalTop4Mode ? "Avg ➜ Pts ➜ V ➜ Bonus" : "Pts ➜ V ➜ Bonus"}</Pill>
                       </div>
                       <div className="mt-2 space-y-1">
                         {currentPoolStandings[pool].map((r, idx: number) => (
@@ -4759,7 +5040,7 @@ export default function App() {
                               <span className="font-semibold">{r.name}</span>
                             </div>
                             <div className="flex items-center gap-3 text-xs">
-                              {fairSoireeMode && (
+                              {globalTop4Mode && (
                                 <>
                                   <span className="text-white/70">AVG</span>
                                   <span className="font-bold">{r.avg.toFixed(2)}</span>
@@ -4781,9 +5062,12 @@ export default function App() {
               </Section>
 
               <div className="mt-3 rounded-xl border border-white/10 bg-black/30 p-3">
-                {fairSoireeMode ? (
+                {globalTop4Mode ? (
                   <div className="text-sm text-white/70">
-                    Mode absents actif: qualification en demis par <span className="font-semibold text-white">Top 4 global</span> (moyenne points/match), avec affiches 1v4 et 2v3.
+                    {fairSoireeMode
+                      ? "Mode absents actif"
+                      : `Format ${getTournamentFormatLabel(currentSoiree.tournamentFormat ?? "CLASSIC_POOLS")} actif`}
+                    : qualification en demis par <span className="font-semibold text-white">Top 4 global</span> (moyenne points/match), avec affiches 1v4 et 2v3.
                   </div>
                 ) : (
                   <>
@@ -5389,6 +5673,77 @@ export default function App() {
                       <span className="font-bold">{r.semis}</span>
                     </div>
                   ))}
+              </div>
+            </Section>
+          </div>
+        )}
+
+        {tab === "CLASSEMENT" && (
+          <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <Section title="Probabilité Podium Live">
+              <div className="space-y-2">
+                {premiumAnalytics.podiumProbabilities.slice(0, 6).map((r) => (
+                  <div key={r.player} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="h-2.5 w-2.5 rounded-full" style={{ background: playerColors.get(r.player) ?? "#ffffff33" }} />
+                        <span className="font-semibold">{r.player}</span>
+                      </div>
+                      <span className="text-sm font-bold">{r.top3}% Top 3</span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                      <div className="rounded bg-black/25 px-2 py-1 text-center">🥇 {r.p1}%</div>
+                      <div className="rounded bg-black/25 px-2 py-1 text-center">🥈 {r.p2}%</div>
+                      <div className="rounded bg-black/25 px-2 py-1 text-center">🥉 {r.p3}%</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Section>
+
+            <Section title="MVP Soirée + Difficulté">
+              <div className="space-y-2">
+                {premiumAnalytics.mvp.slice(0, 5).map((r, idx: number) => (
+                  <div key={r.player} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-white/60 w-5">{idx + 1}.</span>
+                        <span className="h-2.5 w-2.5 rounded-full" style={{ background: playerColors.get(r.player) ?? "#ffffff33" }} />
+                        <span className="font-semibold">{r.player}</span>
+                      </div>
+                      <span className="font-bold">{r.score}</span>
+                    </div>
+                    <div className="mt-1 text-xs text-white/60">
+                      {r.pts} pts • {r.wins} V • {r.bonus} bonus
+                    </div>
+                  </div>
+                ))}
+                <div className="mt-3 text-xs text-white/60">Parcours difficiles (victoires vs joueurs forts)</div>
+                {premiumAnalytics.difficulty.slice(0, 3).map((d) => (
+                  <div key={d.player} className="flex items-center justify-between rounded-lg bg-black/25 px-2 py-1 text-xs">
+                    <span>{d.player}</span>
+                    <span className="font-semibold">indice {d.avgStrength}</span>
+                  </div>
+                ))}
+              </div>
+            </Section>
+
+            <Section title="Perf Par Phase">
+              <div className="space-y-2">
+                {premiumAnalytics.phasePerformance.map((row) => (
+                  <div key={row.player} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2">
+                    <div className="mb-1 flex items-center gap-2">
+                      <span className="h-2.5 w-2.5 rounded-full" style={{ background: playerColors.get(row.player) ?? "#ffffff33" }} />
+                      <span className="font-semibold">{row.player}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1 text-[11px] text-white/70">
+                      <span>Poule: {row.POULE.wins}/{row.POULE.played} ({row.POULE.rate}%)</span>
+                      <span>Demi: {row.DEMI.wins}/{row.DEMI.played} ({row.DEMI.rate}%)</span>
+                      <span>Petite F: {row.PFINAL.wins}/{row.PFINAL.played} ({row.PFINAL.rate}%)</span>
+                      <span>Finale: {row.FINAL.wins}/{row.FINAL.played} ({row.FINAL.rate}%)</span>
+                    </div>
+                  </div>
+                ))}
               </div>
             </Section>
           </div>
@@ -7040,6 +7395,101 @@ export default function App() {
           </div>
         )}
 
+        {operatorFullscreen && !readOnlyMode && (
+          <div className="fixed inset-0 z-50 bg-[#060a12] p-4 md:p-8">
+            <div className="mx-auto flex h-full w-full max-w-6xl flex-col gap-4 rounded-2xl border border-cyan-300/25 bg-black/40 p-4 md:p-6">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-[11px] uppercase tracking-[0.28em] text-cyan-200/80">Mode Opérateur</div>
+                  <div className="text-xl font-extrabold">
+                    Soirée {currentSoiree.number} • {getTournamentFormatLabel(currentSoiree.tournamentFormat ?? "CLASSIC_POOLS")}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant={currentSoireeLocked ? "danger" : "ghost"} onClick={() => setCurrentSoireeLocked(!currentSoireeLocked)}>
+                    {currentSoireeLocked ? "Déverrouiller" : "Verrouiller"}
+                  </Button>
+                  <Button variant="ghost" onClick={() => setOperatorFullscreen(false)}>
+                    Fermer (Esc)
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                <div className="lg:col-span-2 rounded-2xl border border-white/10 bg-black/30 p-4">
+                  <div className="text-xs uppercase tracking-[0.2em] text-white/60">Match focus</div>
+                  {operatorFocusMatch ? (
+                    <>
+                      <div className="mt-3 grid grid-cols-[1fr,auto,1fr] items-center gap-3">
+                        <div className="text-3xl font-black">{operatorFocusMatch.a || "—"}</div>
+                        <div className="text-white/40">VS</div>
+                        <div className="text-right text-3xl font-black">{operatorFocusMatch.b || "—"}</div>
+                      </div>
+                      <div className="mt-2 text-xs text-white/60">
+                        Match #{operatorFocusMatch.order} • {operatorFocusMatch.phase}
+                        {operatorFocusMatch.pool ? ` • Poule ${operatorFocusMatch.pool}` : ""}
+                      </div>
+                      <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <Button
+                          variant={normName(operatorFocusMatch.winner) === normName(operatorFocusMatch.a) ? "primary" : "ghost"}
+                          size="touch"
+                          onClick={() => setMatchWinner(operatorFocusMatch.id, operatorFocusMatch.a)}
+                          disabled={!operatorFocusMatch.a || !operatorFocusMatch.b || currentSoireeLocked}
+                        >
+                          Valider {operatorFocusMatch.a || "A"}
+                        </Button>
+                        <Button
+                          variant={normName(operatorFocusMatch.winner) === normName(operatorFocusMatch.b) ? "primary" : "ghost"}
+                          size="touch"
+                          onClick={() => setMatchWinner(operatorFocusMatch.id, operatorFocusMatch.b)}
+                          disabled={!operatorFocusMatch.a || !operatorFocusMatch.b || currentSoireeLocked}
+                        >
+                          Valider {operatorFocusMatch.b || "B"}
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="mt-3 text-sm text-white/70">Aucun match disponible.</div>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                    <div className="text-xs uppercase tracking-[0.2em] text-white/60">Chrono</div>
+                    <div className="mt-2 text-3xl font-black">{formatDuration(soireeTiming.elapsedMs)}</div>
+                    <div className="mt-2 grid grid-cols-1 gap-2">
+                      <Button onClick={() => startSoireeTimer()} disabled={currentSoireeLocked}>
+                        Démarrer
+                      </Button>
+                      <Button variant="ghost" onClick={() => stopSoireeTimer()} disabled={currentSoireeLocked || !soireeTiming.startedAt || Boolean(soireeTiming.endedAt)}>
+                        Stop
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                    <div className="text-xs uppercase tracking-[0.2em] text-white/60">Pilotage</div>
+                    <div className="mt-2 grid grid-cols-1 gap-2">
+                      <Button onClick={() => launchNextRecommendedMatch()} disabled={!liveSchedule.nextMatch || currentSoireeLocked}>
+                        Lancer prochain match
+                      </Button>
+                      <Button variant="ghost" onClick={() => recalcFinalsFromPools()} disabled={currentSoireeLocked}>
+                        Calculer demis
+                      </Button>
+                      <Button variant="ghost" onClick={() => recalcFinalAndPFinal()} disabled={currentSoireeLocked}>
+                        Calculer finales
+                      </Button>
+                    </div>
+                    <div className="mt-2 text-xs text-white/60">
+                      Raccourcis: <span className="font-semibold">N</span> prochain match • <span className="font-semibold">T</span> chrono • <span className="font-semibold">L</span> verrou • <span className="font-semibold">O</span> ouvrir/fermer.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {showAttendanceModal && (
           <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm p-4 grid place-items-center">
             <div className="w-full max-w-xl rounded-2xl border border-white/10 bg-[#0f172a] p-4">
@@ -7068,6 +7518,25 @@ export default function App() {
                 })}
               </div>
 
+              <div className="mt-4">
+                <div className="text-xs text-white/60 mb-1">Format soirée</div>
+                <Select
+                  value={newSoireeFormat}
+                  onChange={(v) =>
+                    setNewSoireeFormat(
+                      v === "ROUND_ROBIN" || v === "SWISS_LITE" || v === "DOUBLE_ELIM_LITE" ? v : "CLASSIC_POOLS"
+                    )
+                  }
+                  options={["CLASSIC_POOLS", "ROUND_ROBIN", "SWISS_LITE", "DOUBLE_ELIM_LITE"]}
+                />
+                <div className="mt-1 text-[11px] text-white/50">
+                  {newSoireeFormat === "CLASSIC_POOLS" && "Format ligue classique: poules A/B puis demis/finales."}
+                  {newSoireeFormat === "ROUND_ROBIN" && "Tous contre tous (5-8 joueurs), puis Top 4 en demis."}
+                  {newSoireeFormat === "SWISS_LITE" && "Swiss Lite: ~3 matchs/joueur, puis Top 4 en demis."}
+                  {newSoireeFormat === "DOUBLE_ELIM_LITE" && "Double Elim Lite: ~2 matchs/joueur (2 vies), puis Top 4 en demis."}
+                </div>
+              </div>
+
               <div className="mt-4 flex flex-wrap justify-end gap-2">
                 <Button
                   variant="ghost"
@@ -7081,7 +7550,7 @@ export default function App() {
                 <Button
                   variant="primary"
                   disabled={readOnlyMode || currentSeason.players.length - absentPlayersSelection.length < 4}
-                  onClick={() => startNewSoiree(absentPlayersSelection)}
+                  onClick={() => startNewSoiree(absentPlayersSelection, newSoireeFormat)}
                 >
                   Générer la soirée
                 </Button>
