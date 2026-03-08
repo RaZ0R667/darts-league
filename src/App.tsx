@@ -29,6 +29,7 @@ type MatchStatus = "PENDING" | "VALIDATED" | "CONTESTED";
 type RulesProfile = "STANDARD" | "FUN" | "CUSTOM";
 type PresenceStatus = "HERE" | "LATE" | "ABSENT";
 type TvScene = "WARMUP" | "LIVE" | "FINALE" | "PODIUM";
+type PerformanceSort = "POWER" | "FORM" | "DYNAMIC" | "LOWS";
 type AppTab =
   | "SOIREE"
   | "CLASSEMENT"
@@ -1305,6 +1306,7 @@ export default function App() {
   const [timelinePlay, setTimelinePlay] = useState(false);
   const [timelineStep, setTimelineStep] = useState(0);
   const [timelineSpeedMs, setTimelineSpeedMs] = useState(1200);
+  const [performanceSort, setPerformanceSort] = useState<PerformanceSort>("POWER");
   const [compactMode, setCompactMode] = useState<boolean>(() => {
     try {
       return localStorage.getItem("dl_compact_mode") === "1";
@@ -3444,6 +3446,129 @@ export default function App() {
     };
   }, [currentSeason.players, currentSeason.soirees, effectiveRules, activeSoireeRulePolicies]);
 
+  const dynamicPerformanceRows = useMemo(() => {
+    const players = currentSeason.players;
+    const soirees = [...currentSeason.soirees].sort((a: Soiree, b: Soiree) => a.number - b.number);
+    const results = new Map<string, Array<"W" | "L">>();
+    players.forEach((p: string) => results.set(p, []));
+
+    for (const s of soirees) {
+      const core = [...s.matches].sort((a: CoreMatch, b: CoreMatch) => a.order - b.order);
+      for (const m of core) {
+        const a = normName(m.a);
+        const b = normName(m.b);
+        const w = normName(m.winner);
+        if (!a || !b || !w) continue;
+        if (!players.includes(a) || !players.includes(b)) continue;
+        if (w !== a && w !== b) continue;
+        results.get(a)?.push(w === a ? "W" : "L");
+        results.get(b)?.push(w === b ? "W" : "L");
+      }
+
+      const rebuys = [...s.rebuys].sort((a: RebuyMatch, b: RebuyMatch) => a.createdAt - b.createdAt);
+      for (const r of rebuys) {
+        const a = normName(r.a);
+        const b = normName(r.b);
+        const w = normName(r.winner);
+        if (!a || !b || !w) continue;
+        if (!players.includes(a) || !players.includes(b)) continue;
+        if (w !== a && w !== b) continue;
+        results.get(a)?.push(w === a ? "W" : "L");
+        results.get(b)?.push(w === b ? "W" : "L");
+      }
+    }
+
+    const winRateMap = new Map(advancedStats.winRates.map((r) => [r.player, r.rate] as const));
+    const clutchMap = new Map(advancedStats.clutch.map((r) => [r.player, r.rate] as const));
+    const currentRankMap = new Map(seasonStats.table.map((r, idx: number) => [r.name, idx + 1] as const));
+    const prevRankMap = new Map<string, number>();
+    if (rankingTimeline.labels.length >= 2) {
+      rankingTimeline.series.forEach((ser: { player: string; ranks: number[] }) => {
+        const prev = ser.ranks[ser.ranks.length - 2];
+        if (typeof prev === "number") prevRankMap.set(ser.player, prev);
+      });
+    }
+
+    const rows = players.map((player: string) => {
+      const seq = results.get(player) ?? [];
+      const recent = seq.slice(-5);
+      const recentWins = recent.filter((x) => x === "W").length;
+      const recentPlayed = recent.length;
+      const recentRate = recentPlayed > 0 ? recentWins / recentPlayed : 0;
+
+      let maxLow = 0;
+      let run = 0;
+      for (const x of seq) {
+        if (x === "L") {
+          run += 1;
+          if (run > maxLow) maxLow = run;
+        } else {
+          run = 0;
+        }
+      }
+
+      let currentLow = 0;
+      for (let i = seq.length - 1; i >= 0 && seq[i] === "L"; i--) currentLow += 1;
+
+      const rank = currentRankMap.get(player) ?? players.length;
+      const prevRank = prevRankMap.get(player);
+      const rankDelta = typeof prevRank === "number" ? prevRank - rank : 0;
+      const winRate = winRateMap.get(player) ?? 0;
+      const clutch = clutchMap.get(player) ?? 0;
+      const momentumFactor = (Math.max(-3, Math.min(3, rankDelta)) + 3) / 6; // 0..1
+
+      const power = Math.round(
+        winRate * 0.42 +
+          recentRate * 100 * 0.33 +
+          clutch * 0.15 +
+          momentumFactor * 10
+      );
+
+      return {
+        player,
+        rank,
+        prevRank: prevRank ?? null,
+        rankDelta,
+        recent,
+        recentWins,
+        recentPlayed,
+        recentRate: Math.round(recentRate * 1000) / 10,
+        lowStreak: maxLow,
+        currentLow,
+        winRate,
+        clutch,
+        power,
+      };
+    });
+
+    rows.sort((a, b) => {
+      if (performanceSort === "FORM") {
+        if (b.recentRate !== a.recentRate) return b.recentRate - a.recentRate;
+        if (b.recentWins !== a.recentWins) return b.recentWins - a.recentWins;
+      } else if (performanceSort === "DYNAMIC") {
+        if (b.rankDelta !== a.rankDelta) return b.rankDelta - a.rankDelta;
+      } else if (performanceSort === "LOWS") {
+        if (a.lowStreak !== b.lowStreak) return a.lowStreak - b.lowStreak;
+        if (a.currentLow !== b.currentLow) return a.currentLow - b.currentLow;
+      } else {
+        if (b.power !== a.power) return b.power - a.power;
+      }
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return a.player.localeCompare(b.player);
+    });
+
+    return rows;
+  }, [
+    currentSeason.players,
+    currentSeason.soirees,
+    advancedStats.winRates,
+    advancedStats.clutch,
+    seasonStats.table,
+    rankingTimeline.labels.length,
+    rankingTimeline.series,
+    performanceSort,
+  ]);
+
   useEffect(() => {
     const maxStep = Math.max(0, rankingTimeline.labels.length - 1);
     if (timelineStep > maxStep) setTimelineStep(maxStep);
@@ -4611,6 +4736,79 @@ export default function App() {
                   </div>
                 </div>
               )}
+            </Section>
+          </div>
+        )}
+
+        {tab === "CLASSEMENT" && (
+          <div className="mt-4">
+            <Section
+              title="Classement dynamique • Forme récente • Lows • Puissance"
+              right={
+                <div className="flex flex-wrap gap-2">
+                  <Button variant={performanceSort === "POWER" ? "primary" : "ghost"} onClick={() => setPerformanceSort("POWER")}>
+                    Puissance
+                  </Button>
+                  <Button variant={performanceSort === "FORM" ? "primary" : "ghost"} onClick={() => setPerformanceSort("FORM")}>
+                    Forme
+                  </Button>
+                  <Button variant={performanceSort === "DYNAMIC" ? "primary" : "ghost"} onClick={() => setPerformanceSort("DYNAMIC")}>
+                    Dynamique
+                  </Button>
+                  <Button variant={performanceSort === "LOWS" ? "primary" : "ghost"} onClick={() => setPerformanceSort("LOWS")}>
+                    Lows
+                  </Button>
+                </div>
+              }
+            >
+              <div className="space-y-2">
+                {dynamicPerformanceRows.map((r) => (
+                  <div key={r.player} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-white/60 w-6">#{r.rank}</span>
+                        <span className="h-2.5 w-2.5 rounded-full" style={{ background: playerColors.get(r.player) ?? "#ffffff33" }} />
+                        <span className="font-semibold">{r.player}</span>
+                        <Pill color={r.rankDelta > 0 ? "#22c55e" : r.rankDelta < 0 ? "#ef4444" : undefined}>
+                          {r.rankDelta > 0 ? `▲ +${r.rankDelta}` : r.rankDelta < 0 ? `▼ ${r.rankDelta}` : "— 0"}
+                        </Pill>
+                      </div>
+                      <div className="text-xs sm:text-sm font-semibold">Puissance: {r.power}</div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                      <span className="text-white/60">Forme (5):</span>
+                      {Array.from({ length: 5 }).map((_, i: number) => {
+                        const v = r.recent[i];
+                        const cls =
+                          v === "W"
+                            ? "bg-emerald-500/70 text-emerald-100"
+                            : v === "L"
+                              ? "bg-rose-500/70 text-rose-100"
+                              : "bg-white/10 text-white/40";
+                        return (
+                          <span key={`${r.player}-form-${i}`} className={`inline-flex h-6 w-6 items-center justify-center rounded-md text-[10px] font-bold ${cls}`}>
+                            {v ?? "·"}
+                          </span>
+                        );
+                      })}
+                      <span className="text-white/70">{r.recentWins}/{Math.max(r.recentPlayed, 1)} • {r.recentRate}%</span>
+                      <span className="text-white/50">|</span>
+                      <span className="text-white/70">Win rate: {r.winRate}%</span>
+                      <span className="text-white/50">|</span>
+                      <span className="text-white/70">Lows: max {r.lowStreak} • actuel {r.currentLow}</span>
+                    </div>
+                    <div className="mt-2 h-2 w-full rounded-full bg-white/10">
+                      <div
+                        className="h-2 rounded-full transition-all"
+                        style={{
+                          width: `${Math.max(0, Math.min(100, r.power))}%`,
+                          background: playerColors.get(r.player) ?? "#22c55e",
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
             </Section>
           </div>
         )}
