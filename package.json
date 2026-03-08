@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "typecheck": "tsc -b",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:ci": "vitest run --reporter=basic",
+    "check": "npm run typecheck && npm run test:ci && npm run build"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
