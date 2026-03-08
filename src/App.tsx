@@ -4143,80 +4143,6 @@ export default function App() {
           </div>
         )}
 
-        {tvMode && !readOnlyMode && (
-          <div className="mb-4 rounded-2xl border border-white/10 bg-black/30 p-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <Button variant={tvAutoRotateEnabled ? "primary" : "ghost"} onClick={() => setTvAutoRotateEnabled((v) => !v)}>
-                {tvAutoRotateEnabled ? "Auto ON" : "Auto OFF"} (Espace)
-              </Button>
-              <div className="w-44">
-                <Select
-                  value={String(tvRotateEveryMs)}
-                  onChange={(v) => setTvRotateEveryMs([8000, 12000, 20000].includes(Number(v)) ? Number(v) : 12000)}
-                  options={["8000", "12000", "20000"]}
-                />
-              </div>
-              <Button variant="ghost" onClick={() => goToTvTab(-1)}>
-                Précédent (←)
-              </Button>
-              <Button variant="ghost" onClick={() => goToTvTab(1)}>
-                Suivant (→)
-              </Button>
-            </div>
-            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
-              {TV_TAB_CATALOG.map((item) => {
-                const enabled = tvRotationTabs.includes(item.tab);
-                const idx = tvRotationTabs.indexOf(item.tab);
-                return (
-                  <div key={item.tab} className="rounded-xl border border-white/10 bg-black/20 p-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <label className="inline-flex items-center gap-2 text-xs">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 rounded border-white/20 bg-black"
-                          checked={enabled}
-                          onChange={() => toggleTvRotationTab(item.tab)}
-                        />
-                        {item.label}
-                      </label>
-                      {enabled && (
-                        <div className="flex gap-1">
-                          <Button variant="ghost" onClick={() => moveTvRotationTab(idx, -1)} disabled={idx <= 0}>
-                            ↑
-                          </Button>
-                          <Button variant="ghost" onClick={() => moveTvRotationTab(idx, 1)} disabled={idx < 0 || idx >= tvRotationTabs.length - 1}>
-                            ↓
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <Button variant={tvBroadcastOverlayKind === "SPONSOR" ? "primary" : "ghost"} onClick={() => setBroadcastOverlay("SPONSOR")}>
-                Sponsor (S)
-              </Button>
-              <Button variant={tvBroadcastOverlayKind === "PAUSE" ? "primary" : "ghost"} onClick={() => setBroadcastOverlay("PAUSE")}>
-                Pause (P)
-              </Button>
-              <Button variant={tvBroadcastOverlayKind === "ANNOUNCE" ? "primary" : "ghost"} onClick={() => setBroadcastOverlay("ANNOUNCE")}>
-                Annonce (A)
-              </Button>
-              <Button variant="ghost" onClick={() => setTvBroadcastOverlayKind("")}>
-                Effacer (Esc)
-              </Button>
-              <input
-                className="min-w-[220px] flex-1 rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/25"
-                value={tvBroadcastAnnouncement}
-                onChange={(e) => setTvBroadcastAnnouncement(e.target.value)}
-                placeholder="Texte annonce"
-              />
-            </div>
-          </div>
-        )}
-
         {tvMode && tvBroadcastOverlayKind && (
           <div className={`mb-4 rounded-2xl border px-4 py-3 tv-broadcast-overlay tv-broadcast-${tvBroadcastOverlayKind.toLowerCase()}`}>
             <div className="text-[11px] uppercase tracking-[0.28em] text-white/70">
@@ -7036,6 +6962,81 @@ export default function App() {
                 </div>
               </div>
             </Section>
+          </div>
+        )}
+
+        {tvMode && !readOnlyMode && (
+          <div className="mt-6 rounded-2xl border border-white/10 bg-black/30 p-4">
+            <div className="mb-2 text-xs uppercase tracking-[0.24em] text-white/60">Régie TV</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant={tvAutoRotateEnabled ? "primary" : "ghost"} onClick={() => setTvAutoRotateEnabled((v) => !v)}>
+                {tvAutoRotateEnabled ? "Auto ON" : "Auto OFF"} (Espace)
+              </Button>
+              <div className="w-44">
+                <Select
+                  value={String(tvRotateEveryMs)}
+                  onChange={(v) => setTvRotateEveryMs([8000, 12000, 20000].includes(Number(v)) ? Number(v) : 12000)}
+                  options={["8000", "12000", "20000"]}
+                />
+              </div>
+              <Button variant="ghost" onClick={() => goToTvTab(-1)}>
+                Précédent (←)
+              </Button>
+              <Button variant="ghost" onClick={() => goToTvTab(1)}>
+                Suivant (→)
+              </Button>
+            </div>
+            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+              {TV_TAB_CATALOG.map((item) => {
+                const enabled = tvRotationTabs.includes(item.tab);
+                const idx = tvRotationTabs.indexOf(item.tab);
+                return (
+                  <div key={item.tab} className="rounded-xl border border-white/10 bg-black/20 p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="inline-flex items-center gap-2 text-xs">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-white/20 bg-black"
+                          checked={enabled}
+                          onChange={() => toggleTvRotationTab(item.tab)}
+                        />
+                        {item.label}
+                      </label>
+                      {enabled && (
+                        <div className="flex gap-1">
+                          <Button variant="ghost" onClick={() => moveTvRotationTab(idx, -1)} disabled={idx <= 0}>
+                            ↑
+                          </Button>
+                          <Button variant="ghost" onClick={() => moveTvRotationTab(idx, 1)} disabled={idx < 0 || idx >= tvRotationTabs.length - 1}>
+                            ↓
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button variant={tvBroadcastOverlayKind === "SPONSOR" ? "primary" : "ghost"} onClick={() => setBroadcastOverlay("SPONSOR")}>
+                Sponsor (S)
+              </Button>
+              <Button variant={tvBroadcastOverlayKind === "PAUSE" ? "primary" : "ghost"} onClick={() => setBroadcastOverlay("PAUSE")}>
+                Pause (P)
+              </Button>
+              <Button variant={tvBroadcastOverlayKind === "ANNOUNCE" ? "primary" : "ghost"} onClick={() => setBroadcastOverlay("ANNOUNCE")}>
+                Annonce (A)
+              </Button>
+              <Button variant="ghost" onClick={() => setTvBroadcastOverlayKind("")}>
+                Effacer (Esc)
+              </Button>
+              <input
+                className="min-w-[220px] flex-1 rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/25"
+                value={tvBroadcastAnnouncement}
+                onChange={(e) => setTvBroadcastAnnouncement(e.target.value)}
+                placeholder="Texte annonce"
+              />
+            </div>
           </div>
         )}
 
