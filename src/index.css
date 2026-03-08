@@ -521,3 +521,123 @@ textarea:focus-visible {
   22% { opacity: 1; transform: scale(1.04) translateY(0); }
   100% { opacity: 0; transform: scale(1) translateY(-12px); }
 }
+
+.app-tab-animate {
+  animation: appTabIn 0.28s cubic-bezier(0.22, 0.8, 0.2, 1);
+}
+
+@keyframes appTabIn {
+  0% { opacity: 0; transform: translateY(8px) scale(0.995); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.dl-mode-pill {
+  position: relative;
+  overflow: hidden;
+  transform: translateY(0);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+}
+
+.dl-mode-pill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(110deg, transparent 18%, rgba(255, 255, 255, 0.22) 44%, transparent 70%);
+  transform: translateX(-130%);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.dl-mode-pill:hover {
+  transform: translateY(-1px);
+}
+
+.dl-mode-pill:hover::after {
+  opacity: 1;
+  animation: modePillSweep 0.95s ease;
+}
+
+.dl-mode-pill.is-active {
+  animation: modePillPulse 2.6s ease-in-out infinite;
+}
+
+@keyframes modePillSweep {
+  0% { transform: translateX(-130%); }
+  100% { transform: translateX(140%); }
+}
+
+@keyframes modePillPulse {
+  0%, 100% { filter: saturate(1); }
+  50% { filter: saturate(1.15); }
+}
+
+.dl-nav-card {
+  position: relative;
+  overflow: hidden;
+  transform: translateY(0) scale(1);
+  transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+}
+
+.dl-nav-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(104deg, transparent 16%, rgba(255, 255, 255, 0.14) 42%, transparent 72%);
+  transform: translateX(-130%);
+  opacity: 0;
+}
+
+.dl-nav-card:hover {
+  transform: translateY(-2px) scale(1.01);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.2);
+}
+
+.dl-nav-card:hover::after {
+  opacity: 1;
+  animation: navCardSweep 0.95s ease;
+}
+
+.dl-nav-card.is-active {
+  animation: navCardActive 2.8s ease-in-out infinite;
+}
+
+.dl-nav-icon {
+  transition: transform 0.2s ease;
+}
+
+.dl-nav-card:hover .dl-nav-icon {
+  transform: scale(1.08) rotate(-4deg);
+}
+
+.dl-nav-chip {
+  transform: translateY(0);
+}
+
+.dl-nav-chip.is-active {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 8px 20px rgba(255, 255, 255, 0.12);
+}
+
+@keyframes navCardSweep {
+  0% { transform: translateX(-130%); }
+  100% { transform: translateX(140%); }
+}
+
+@keyframes navCardActive {
+  0%, 100% { box-shadow: 0 8px 24px rgba(255, 255, 255, 0.12); }
+  50% { box-shadow: 0 12px 30px rgba(255, 255, 255, 0.22); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-tab-animate,
+  .dl-mode-pill,
+  .dl-mode-pill::after,
+  .dl-nav-card,
+  .dl-nav-card::after,
+  .dl-nav-card.is-active {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}

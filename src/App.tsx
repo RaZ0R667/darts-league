@@ -4325,11 +4325,11 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex flex-col items-stretch gap-2 md:items-end">
+          <div className="flex flex-col items-stretch gap-2 md:items-end dl-top-actions">
             <div className="flex flex-wrap gap-2">
               <button
                 onClick={() => setTvMode((v) => !v)}
-                className={`rounded-2xl border px-4 py-2 text-sm font-semibold transition ${
+                className={`dl-mode-pill dl-mode-pill-tv rounded-2xl border px-4 py-2 text-sm font-semibold transition ${tvMode ? "is-active" : ""} ${
                   tvMode
                     ? "border-cyan-300/80 bg-gradient-to-r from-cyan-300 to-blue-400 text-black shadow-[0_0_24px_rgba(34,211,238,0.45)]"
                     : "border-cyan-300/40 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/20"
@@ -4340,7 +4340,7 @@ export default function App() {
               {!readOnlyMode && (
                 <button
                   onClick={() => setTab(tab === "FUN" ? "SOIREE" : "FUN")}
-                  className={`rounded-2xl border px-4 py-2 text-sm font-semibold transition ${
+                  className={`dl-mode-pill dl-mode-pill-fun rounded-2xl border px-4 py-2 text-sm font-semibold transition ${tab === "FUN" ? "is-active" : ""} ${
                     tab === "FUN"
                       ? "border-fuchsia-300/80 bg-gradient-to-r from-fuchsia-300 to-orange-300 text-black shadow-[0_0_24px_rgba(244,114,182,0.4)]"
                       : "border-fuchsia-300/40 bg-fuchsia-400/10 text-fuchsia-100 hover:bg-fuchsia-400/20"
@@ -4577,7 +4577,7 @@ export default function App() {
           {navTabs.map(([k, label]) => (
             <button
               key={k}
-              className={`rounded-2xl border px-3 py-2 text-left transition ${
+              className={`dl-nav-card rounded-2xl border px-3 py-2 text-left transition ${tab === k ? "is-active" : ""} ${
                 tab === k
                   ? "border-white/40 bg-white text-black shadow-[0_8px_28px_rgba(255,255,255,0.15)]"
                   : "border-white/10 bg-white/5 text-white hover:bg-white/10"
@@ -4585,7 +4585,7 @@ export default function App() {
               onClick={() => setTab(k)}
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="text-lg leading-none">{navTabIcons[k]}</span>
+                <span className="text-lg leading-none dl-nav-icon">{navTabIcons[k]}</span>
                 <span className={`text-[10px] font-semibold uppercase tracking-[0.16em] ${tab === k ? "text-black/70" : "text-white/40"}`}>
                   {tab === k ? "Ouvert" : "Menu"}
                 </span>
@@ -4601,7 +4601,7 @@ export default function App() {
               {navTabs.map(([k, label]) => (
                 <button
                   key={k}
-                  className={`rounded-xl border px-3 py-2 text-[11px] font-semibold transition ${
+                  className={`dl-nav-chip rounded-xl border px-3 py-2 text-[11px] font-semibold transition ${tab === k ? "is-active" : ""} ${
                     tab === k
                       ? "border-white/40 bg-white text-black"
                       : "border-white/10 bg-white/5 text-white/80 hover:bg-white/10"
@@ -4633,7 +4633,7 @@ export default function App() {
           </div>
         )}
 
-        <div className={`tv-stage ${tvMode ? "tv-animate" : ""}`} key={tvMode ? tab : "static"}>
+        <div className={`tv-stage ${tvMode ? "tv-animate" : "app-tab-animate"}`} key={`${tvMode ? "tv" : "app"}-${tab}`}>
         {tab === "SOIREE" && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             {currentSoireeLocked && (
