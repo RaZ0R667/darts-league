@@ -2258,7 +2258,6 @@ export default function App() {
   }, [tvMode, tab, tvScene]);
 
   useEffect(() => {
-    if (readOnlyMode) return;
     const isEditableTarget = (target: EventTarget | null) => {
       const el = target as HTMLElement | null;
       if (!el) return false;
@@ -2269,6 +2268,17 @@ export default function App() {
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (isEditableTarget(e.target)) return;
+
+      if (tvMode && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
+        e.preventDefault();
+        const current = Math.max(0, tvTabs.indexOf(tab as (typeof tvTabs)[number]));
+        const delta = e.key === "ArrowRight" ? 1 : -1;
+        const next = (current + delta + tvTabs.length) % tvTabs.length;
+        setTab(tvTabs[next]);
+        return;
+      }
+
+      if (readOnlyMode) return;
 
       if (e.altKey) {
         const nextTab = (() => {
@@ -2314,7 +2324,7 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [readOnlyMode, tab, liveSchedule.nextMatch, currentSoireeLocked, soireeTiming.startedAt, soireeTiming.endedAt]);
+  }, [readOnlyMode, tvMode, tab, liveSchedule.nextMatch, currentSoireeLocked, soireeTiming.startedAt, soireeTiming.endedAt]);
 
   function updateSeason(mutator: (season: Season) => Season) {
     setState((prev) => {
