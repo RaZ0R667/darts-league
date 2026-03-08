@@ -656,10 +656,6 @@ function useGlobalTop4Qualification(soiree: Soiree) {
   return isFairSoireeMode(soiree) || soiree.tournamentFormat === "ROUND_ROBIN" || soiree.tournamentFormat === "SWISS_LITE" || soiree.tournamentFormat === "DOUBLE_ELIM_LITE";
 }
 
-function usePlacementScoringForSeason(soiree: Soiree) {
-  return isFairSoireeMode(soiree) || soiree.tournamentFormat === "ROUND_ROBIN";
-}
-
 function getMatchWinPointsForSoiree(match: CoreMatch, rules: RulesConfig, ctx: ResolvedRuleContext) {
   const base = match.phase === "PFINAL" ? rules.smallFinalPoints : rules.winPoints;
   return base * ctx.matchWinMultiplier;
@@ -725,7 +721,7 @@ function computeSoireeRankingPoints(
 ) {
   const participants = uniq([...soiree.pools.A, ...soiree.pools.B]).filter(isNonEmptyString);
   if (!participants.length) return new Map<string, number>();
-  const fairMode = useGlobalTop4Qualification(soiree);
+  const fairMode = isFairSoireeMode(soiree);
 
   const poolA = computePoolRows(soiree, "A", season, rules, rulePolicies);
   const poolB = computePoolRows(soiree, "B", season, rules, rulePolicies);
@@ -826,7 +822,7 @@ function aggregateSeasonStats(
       rules,
       rulePolicies
     );
-    if (usePlacementScoringForSeason(s)) {
+    if (isFairSoireeMode(s)) {
       const soireePoints = computeSoireeRankingPoints(s, season, rules, rulePolicies);
       for (const [k, v] of soireePoints.entries()) add(pts, k, v);
     } else {
@@ -1021,10 +1017,6 @@ function computeSoireeRankingRows(
   rulePolicies: SoireeRulePolicy[] = DEFAULT_SOIREE_RULE_POLICIES
 ) {
   const participants = uniq([...soiree.pools.A, ...soiree.pools.B].map(normName)).filter(isNonEmptyString);
-  const usePlacementScoring = usePlacementScoringForSeason(soiree);
-  const placementPoints = usePlacementScoring
-    ? computeSoireeRankingPoints(soiree, season, rules, rulePolicies)
-    : null;
   const { pts, wins, bonus } = computePointsFromMatches(
     soiree.matches,
     soiree.rebuys,
@@ -1035,7 +1027,7 @@ function computeSoireeRankingRows(
   );
   const rows = participants.map((p: string) => ({
     name: p,
-    pts: usePlacementScoring ? placementPoints?.get(p) ?? 0 : pts.get(p) ?? 0,
+    pts: pts.get(p) ?? 0,
     wins: wins.get(p) ?? 0,
     bonus: bonus.get(p) ?? 0,
   }));
@@ -2552,6 +2544,19 @@ export default function App() {
     ["REGLES", "Règles"],
   ];
   const navTabs = readOnlyMode ? readOnlyNavTabs : allNavTabs;
+  const navTabIcons: Record<AppTab, string> = {
+    SOIREE: "🎯",
+    CLASSEMENT: "🏆",
+    HISTO: "🕘",
+    REBUY: "🔁",
+    FUN: "🎉",
+    H2H: "⚔️",
+    FINANCES: "💶",
+    ARBITRAGE: "🧾",
+    REGLES: "📘",
+    PARAMS: "⚙️",
+    SAISONS: "🗂️",
+  };
 
   useEffect(() => {
     if (!tvMode) return;
@@ -4320,29 +4325,45 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            <Button variant={tvMode ? "primary" : "ghost"} onClick={() => setTvMode((v) => !v)}>
-              {tvMode ? "Quitter Mode TV" : "Mode TV"}
-            </Button>
-            {!readOnlyMode && (
-              <Button variant={tab === "FUN" ? "primary" : "ghost"} onClick={() => setTab(tab === "FUN" ? "SOIREE" : "FUN")}>
-                {tab === "FUN" ? "Retour Saison" : "Mode Fun"}
-              </Button>
-            )}
+          <div className="flex flex-col items-stretch gap-2 md:items-end">
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => setTvMode((v) => !v)}
+                className={`rounded-2xl border px-4 py-2 text-sm font-semibold transition ${
+                  tvMode
+                    ? "border-cyan-300/80 bg-gradient-to-r from-cyan-300 to-blue-400 text-black shadow-[0_0_24px_rgba(34,211,238,0.45)]"
+                    : "border-cyan-300/40 bg-cyan-400/10 text-cyan-100 hover:bg-cyan-400/20"
+                }`}
+              >
+                {tvMode ? "Mode TV • ON" : "Mode TV"}
+              </button>
+              {!readOnlyMode && (
+                <button
+                  onClick={() => setTab(tab === "FUN" ? "SOIREE" : "FUN")}
+                  className={`rounded-2xl border px-4 py-2 text-sm font-semibold transition ${
+                    tab === "FUN"
+                      ? "border-fuchsia-300/80 bg-gradient-to-r from-fuchsia-300 to-orange-300 text-black shadow-[0_0_24px_rgba(244,114,182,0.4)]"
+                      : "border-fuchsia-300/40 bg-fuchsia-400/10 text-fuchsia-100 hover:bg-fuchsia-400/20"
+                  }`}
+                >
+                  {tab === "FUN" ? "Mode Fun • ACTIF" : "Mode Fun"}
+                </button>
+              )}
+              {!tvMode && !readOnlyMode && (
+                <Button variant={operatorFullscreen ? "primary" : "ghost"} onClick={() => setOperatorFullscreen((v) => !v)}>
+                  {operatorFullscreen ? "Quitter Opérateur" : "Mode Opérateur"}
+                </Button>
+              )}
+            </div>
             {!tvMode && !readOnlyMode && (
-              <Button variant={operatorFullscreen ? "primary" : "ghost"} onClick={() => setOperatorFullscreen((v) => !v)}>
-                {operatorFullscreen ? "Quitter Opérateur" : "Mode Opérateur"}
-              </Button>
-            )}
-            {!tvMode && !readOnlyMode && (
-              <Button variant="ghost" onClick={() => openAttendanceModal()}>
-              Générer une soirée
-            </Button>
-            )}
-            {!tvMode && !readOnlyMode && (
-              <Button variant="danger" onClick={(e) => confirmSmart("reset-all", "Confirmer le reset complet ? Cette action supprime la saison en cours.", e) && resetAll()}>
-                Reset complet
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="ghost" onClick={() => openAttendanceModal()}>
+                  Générer une soirée
+                </Button>
+                <Button variant="danger" onClick={(e) => confirmSmart("reset-all", "Confirmer le reset complet ? Cette action supprime la saison en cours.", e) && resetAll()}>
+                  Reset complet
+                </Button>
+              </div>
             )}
           </div>
         </div>
@@ -4521,9 +4542,7 @@ export default function App() {
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
-                <div className="text-xs uppercase tracking-[0.2em] text-white/50">
-                  Classement live (soirée{currentSoiree.tournamentFormat === "ROUND_ROBIN" ? " • points de position" : ""})
-                </div>
+                <div className="text-xs uppercase tracking-[0.2em] text-white/50">Classement live (soirée)</div>
                 <div className="mt-2 space-y-1 text-sm">
                   {liveSoireeRanking.slice(0, 5).map((r, idx: number) => (
                     <div key={r.name} className="flex items-center justify-between rounded-lg bg-black/25 px-2 py-1">
@@ -4554,33 +4573,46 @@ export default function App() {
           </div>
         </div>
 
-        <div className="mb-6 hidden md:flex gap-2 overflow-x-auto pb-2 tv-hide">
+        <div className="mb-6 hidden md:grid grid-cols-2 gap-2 lg:grid-cols-5 tv-hide">
           {navTabs.map(([k, label]) => (
             <button
               key={k}
-              className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-semibold transition ${
-                tab === k ? "bg-white text-black" : "bg-white/10 text-white hover:bg-white/15"
+              className={`rounded-2xl border px-3 py-2 text-left transition ${
+                tab === k
+                  ? "border-white/40 bg-white text-black shadow-[0_8px_28px_rgba(255,255,255,0.15)]"
+                  : "border-white/10 bg-white/5 text-white hover:bg-white/10"
               }`}
               onClick={() => setTab(k)}
             >
-              {label}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-lg leading-none">{navTabIcons[k]}</span>
+                <span className={`text-[10px] font-semibold uppercase tracking-[0.16em] ${tab === k ? "text-black/70" : "text-white/40"}`}>
+                  {tab === k ? "Ouvert" : "Menu"}
+                </span>
+              </div>
+              <div className="mt-1 text-sm font-semibold">{label}</div>
             </button>
           ))}
         </div>
 
         <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-white/10 bg-[#0b0f17]/95 backdrop-blur tv-hide">
-          <div className="mx-auto flex max-w-6xl items-center justify-between px-3 py-2">
-            {navTabs.map(([k, label]) => (
-              <button
-                key={k}
-                className={`flex-1 rounded-xl px-2 py-2 text-[11px] font-semibold transition ${
-                  tab === k ? "bg-white text-black" : "text-white/70 hover:bg-white/10"
-                }`}
-                onClick={() => setTab(k)}
-              >
-                {label}
-              </button>
-            ))}
+          <div className="mx-auto max-w-6xl overflow-x-auto px-2 py-2">
+            <div className="flex min-w-max gap-2">
+              {navTabs.map(([k, label]) => (
+                <button
+                  key={k}
+                  className={`rounded-xl border px-3 py-2 text-[11px] font-semibold transition ${
+                    tab === k
+                      ? "border-white/40 bg-white text-black"
+                      : "border-white/10 bg-white/5 text-white/80 hover:bg-white/10"
+                  }`}
+                  onClick={() => setTab(k)}
+                >
+                  <span className="mr-1">{navTabIcons[k]}</span>
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -7521,7 +7553,7 @@ export default function App() {
                 />
                 <div className="mt-1 text-[11px] text-white/50">
                   {newSoireeFormat === "CLASSIC_POOLS" && "Format ligue classique: poules A/B puis demis/finales."}
-                  {newSoireeFormat === "ROUND_ROBIN" && "Tous contre tous (5-8 joueurs), puis Top 4 en demis. Points soirée = classement de position (N, N-1, ...)."}
+                  {newSoireeFormat === "ROUND_ROBIN" && "Tous contre tous (5-8 joueurs), puis Top 4 en demis."}
                   {newSoireeFormat === "SWISS_LITE" && "Swiss Lite: ~3 matchs/joueur, puis Top 4 en demis."}
                   {newSoireeFormat === "DOUBLE_ELIM_LITE" && "Double Elim Lite: ~2 matchs/joueur (2 vies), puis Top 4 en demis."}
                 </div>
