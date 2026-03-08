@@ -2258,25 +2258,34 @@ export default function App() {
   }, [tvMode, tab, tvScene]);
 
   useEffect(() => {
-    const isEditableTarget = (target: EventTarget | null) => {
+    const isTypingTarget = (target: EventTarget | null) => {
       const el = target as HTMLElement | null;
       if (!el) return false;
       const tag = el.tagName?.toLowerCase?.() ?? "";
-      if (tag === "input" || tag === "textarea" || tag === "select") return true;
+      if (tag === "textarea" || tag === "select") return true;
+      if (tag === "input") {
+        const input = el as HTMLInputElement;
+        const inputType = (input.type || "").toLowerCase();
+        return !["button", "checkbox", "radio", "range", "submit", "reset", "color", "file"].includes(inputType);
+      }
       return Boolean(el.closest("[contenteditable='true']"));
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isEditableTarget(e.target)) return;
+      const typingTarget = isTypingTarget(e.target);
+      const isRight = e.key === "ArrowRight" || e.key === "Right" || e.keyCode === 39;
+      const isLeft = e.key === "ArrowLeft" || e.key === "Left" || e.keyCode === 37;
 
-      if (tvMode && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
+      if (tvMode && !typingTarget && (isRight || isLeft)) {
         e.preventDefault();
         const current = Math.max(0, tvTabs.indexOf(tab as (typeof tvTabs)[number]));
-        const delta = e.key === "ArrowRight" ? 1 : -1;
+        const delta = isRight ? 1 : -1;
         const next = (current + delta + tvTabs.length) % tvTabs.length;
         setTab(tvTabs[next]);
         return;
       }
+
+      if (typingTarget) return;
 
       if (readOnlyMode) return;
 
