@@ -136,6 +136,20 @@ body {
     radial-gradient(900px 500px at 50% 115%, rgba(34, 197, 94, 0.2), transparent 60%);
 }
 
+.app-shell.tv-mode.tv-scene-intro {
+  background:
+    radial-gradient(900px 520px at 50% -14%, rgba(244, 63, 94, 0.34), transparent 58%),
+    radial-gradient(920px 520px at 16% 4%, rgba(234, 179, 8, 0.24), transparent 60%),
+    radial-gradient(900px 500px at 86% 108%, rgba(59, 130, 246, 0.2), transparent 62%);
+}
+
+.app-shell.tv-mode.tv-scene-lineup {
+  background:
+    radial-gradient(900px 520px at 50% -14%, rgba(236, 72, 153, 0.28), transparent 58%),
+    radial-gradient(880px 500px at 14% 8%, rgba(59, 130, 246, 0.24), transparent 60%),
+    radial-gradient(900px 520px at 86% 104%, rgba(16, 185, 129, 0.2), transparent 62%);
+}
+
 .app-shell.tv-mode.tv-scene-warmup {
   background:
     radial-gradient(900px 500px at 20% -10%, rgba(6, 182, 212, 0.28), transparent 58%),
@@ -143,11 +157,25 @@ body {
     radial-gradient(1000px 520px at 50% 112%, rgba(34, 197, 94, 0.2), transparent 62%);
 }
 
+.app-shell.tv-mode.tv-scene-matchfocus {
+  background:
+    radial-gradient(1000px 520px at 50% -14%, rgba(16, 185, 129, 0.26), transparent 58%),
+    radial-gradient(900px 500px at 86% -8%, rgba(59, 130, 246, 0.22), transparent 60%),
+    radial-gradient(900px 460px at 14% 102%, rgba(244, 63, 94, 0.16), transparent 62%);
+}
+
 .app-shell.tv-mode.tv-scene-live {
   background:
     radial-gradient(1000px 520px at 50% -14%, rgba(34, 197, 94, 0.24), transparent 58%),
     radial-gradient(900px 500px at 86% -8%, rgba(59, 130, 246, 0.26), transparent 60%),
     radial-gradient(900px 460px at 14% 102%, rgba(244, 63, 94, 0.2), transparent 62%);
+}
+
+.app-shell.tv-mode.tv-scene-clutch {
+  background:
+    radial-gradient(1000px 560px at 50% -15%, rgba(249, 115, 22, 0.3), transparent 58%),
+    radial-gradient(880px 520px at 14% 0%, rgba(239, 68, 68, 0.24), transparent 60%),
+    radial-gradient(900px 520px at 86% 106%, rgba(234, 179, 8, 0.22), transparent 62%);
 }
 
 .app-shell.tv-mode.tv-scene-finale {
@@ -266,6 +294,38 @@ body {
   background: linear-gradient(135deg, rgba(34, 211, 238, 0.2), rgba(0, 0, 0, 0.4));
 }
 
+.tv-cinematic-overlay {
+  position: relative;
+  overflow: hidden;
+  animation: tvOverlayIn 0.42s ease;
+}
+
+.tv-cinematic-overlay::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(104deg, transparent 16%, rgba(255, 255, 255, 0.2) 42%, transparent 72%);
+  transform: translateX(-130%);
+  animation: tvOverlaySweep 2.6s ease-in-out infinite;
+}
+
+.tv-lower-third {
+  position: relative;
+  overflow: hidden;
+  animation: lowerThirdIn 0.38s ease;
+}
+
+.tv-lower-third::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(106deg, transparent 14%, rgba(56, 189, 248, 0.22) 40%, transparent 72%);
+  transform: translateX(-130%);
+  animation: lowerThirdSweep 2.8s ease-in-out infinite;
+}
+
 .app-shell.tv-mode::before {
   content: "";
   position: fixed;
@@ -328,6 +388,17 @@ body {
 @keyframes tvOverlayLine {
   0% { opacity: 0; transform: translateX(-6px); }
   100% { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes lowerThirdIn {
+  0% { opacity: 0; transform: translateY(10px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes lowerThirdSweep {
+  0% { transform: translateX(-130%); opacity: 0; }
+  20% { opacity: 0.55; }
+  100% { transform: translateX(140%); opacity: 0; }
 }
 
 .tv-spotlight {
@@ -508,6 +579,52 @@ textarea:focus-visible {
   animation: finalNightTitle 2.2s ease-out 1;
 }
 
+.final-night-intro {
+  position: fixed;
+  inset: 0;
+  z-index: 62;
+  pointer-events: none;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  background:
+    radial-gradient(circle at 50% 40%, rgba(251, 191, 36, 0.2), transparent 38%),
+    radial-gradient(circle at 50% 68%, rgba(236, 72, 153, 0.18), transparent 42%),
+    rgba(0, 0, 0, 0.28);
+  animation: finalNightIntroIn 4.2s ease forwards;
+}
+
+.final-night-intro-title {
+  font-family: "Syne", "Space Grotesk", sans-serif;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  font-size: clamp(1.5rem, 3.6vw, 3rem);
+  color: rgba(255, 255, 255, 0.96);
+  text-shadow: 0 0 16px rgba(248, 113, 113, 0.8), 0 0 34px rgba(251, 191, 36, 0.45);
+}
+
+.final-night-intro-subtitle {
+  margin-top: 0.35rem;
+  color: rgba(255, 255, 255, 0.78);
+  letter-spacing: 0.08em;
+  font-size: clamp(0.82rem, 1.2vw, 1rem);
+}
+
+.final-night-credits {
+  position: relative;
+  overflow: hidden;
+}
+
+.final-night-credits::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(108deg, transparent 14%, rgba(244, 114, 182, 0.22) 40%, transparent 72%);
+  transform: translateX(-130%);
+  animation: finalNightSweep 3.6s ease-in-out infinite;
+}
+
 @keyframes finalNightSweep {
   0% { transform: translateX(-130%); opacity: 0; }
   22% { opacity: 0.7; }
@@ -537,6 +654,13 @@ textarea:focus-visible {
   0% { opacity: 0; transform: scale(0.9) translateY(18px); }
   22% { opacity: 1; transform: scale(1.04) translateY(0); }
   100% { opacity: 0; transform: scale(1) translateY(-12px); }
+}
+
+@keyframes finalNightIntroIn {
+  0% { opacity: 0; }
+  12% { opacity: 1; }
+  82% { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 .app-tab-animate {
@@ -674,7 +798,13 @@ textarea:focus-visible {
   .dl-nav-card.is-active,
   .winner-fx,
   .winner-fx::after,
-  .winner-fx-row {
+  .winner-fx-row,
+  .tv-cinematic-overlay,
+  .tv-cinematic-overlay::after,
+  .tv-lower-third,
+  .tv-lower-third::after,
+  .final-night-intro,
+  .final-night-credits::after {
     animation: none !important;
     transition: none !important;
     transform: none !important;

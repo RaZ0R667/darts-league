@@ -28,11 +28,18 @@ type Phase = "POULE" | "DEMI" | "PFINAL" | "FINAL";
 type MatchStatus = "PENDING" | "VALIDATED" | "CONTESTED";
 type RulesProfile = "STANDARD" | "FUN" | "CUSTOM";
 type PresenceStatus = "HERE" | "LATE" | "ABSENT";
-type TvScene = "WARMUP" | "LIVE" | "FINALE" | "PODIUM";
+type TvScene = "INTRO" | "LINEUP" | "WARMUP" | "MATCHFOCUS" | "LIVE" | "CLUTCH" | "FINALE" | "PODIUM";
 type PerformanceSort = "POWER" | "FORM" | "DYNAMIC" | "LOWS";
 type TournamentFormat = "CLASSIC_POOLS" | "ROUND_ROBIN" | "SWISS_LITE" | "DOUBLE_ELIM_LITE";
 type TvTab = Extract<AppTab, "SOIREE" | "CLASSEMENT" | "H2H">;
 type BroadcastOverlayKind = "" | "SPONSOR" | "PAUSE" | "ANNOUNCE";
+type SfxKind = "match" | "checkout" | "scene" | "clutch" | "podium";
+type CinematicMoment = {
+  id: string;
+  title: string;
+  lines: string[];
+  tone: "cyan" | "emerald" | "amber" | "fuchsia";
+};
 type AppTab =
   | "SOIREE"
   | "CLASSEMENT"
@@ -212,6 +219,8 @@ const MAX_STORAGE_HISTORY = 8;
 const TV_ROTATION_TABS_KEY = "darts_league_tv_rotation_tabs_v1";
 const TV_ROTATION_AUTO_KEY = "darts_league_tv_rotation_auto_v1";
 const TV_ROTATION_SPEED_KEY = "darts_league_tv_rotation_speed_v1";
+const TV_SOUND_ENABLED_KEY = "darts_league_tv_sound_enabled_v1";
+const TV_SOUND_VOLUME_KEY = "darts_league_tv_sound_volume_v1";
 
 const SUPABASE_URL = (import.meta as any)?.env?.VITE_SUPABASE_URL ?? "";
 const SUPABASE_ANON_KEY = (import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY ?? "";
@@ -1676,6 +1685,22 @@ export default function App() {
   });
   const [tvBroadcastOverlayKind, setTvBroadcastOverlayKind] = useState<BroadcastOverlayKind>("");
   const [tvBroadcastAnnouncement, setTvBroadcastAnnouncement] = useState("Annonce officielle");
+  const [tvSceneOverride, setTvSceneOverride] = useState<"" | TvScene>("");
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(TV_SOUND_ENABLED_KEY) !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const [soundVolume, setSoundVolume] = useState<number>(() => {
+    try {
+      const raw = Number(localStorage.getItem(TV_SOUND_VOLUME_KEY) ?? 65);
+      return Math.max(0, Math.min(100, Number.isFinite(raw) ? raw : 65));
+    } catch {
+      return 65;
+    }
+  });
   const [operatorFullscreen, setOperatorFullscreen] = useState(false);
   const [timelinePlay, setTimelinePlay] = useState(false);
   const [timelineStep, setTimelineStep] = useState(0);
@@ -1750,6 +1775,8 @@ export default function App() {
   const [funLiveIndex, setFunLiveIndex] = useState(0);
   const [tvOverlayIndex, setTvOverlayIndex] = useState(0);
   const [tvSceneFlash, setTvSceneFlash] = useState<TvScene | "">("");
+  const [cinematicMoment, setCinematicMoment] = useState<CinematicMoment | null>(null);
+  const [showFinalNightIntro, setShowFinalNightIntro] = useState(false);
   const [winnerFxMatchId, setWinnerFxMatchId] = useState("");
   const currentSeasons: Season[] = state.seasons;
   const [selectedSoireeNumber, setSelectedSoireeNumber] = useState<number>(() => {
@@ -1769,6 +1796,9 @@ export default function App() {
   const smartConfirmMemoryRef = useRef<Record<string, number>>({});
   const previousTvSceneRef = useRef<TvScene | null>(null);
   const winnerFxTimerRef = useRef<number | null>(null);
+  const cinematicTimerRef = useRef<number | null>(null);
+  const finalNightIntroKeyRef = useRef("");
+  const audioCtxRef = useRef<AudioContext | null>(null);
 
   const currentSeason = useMemo<Season>(() => {
     return currentSeasons.find((s: Season) => s.id === state.activeSeasonId) ?? currentSeasons[0];
@@ -1782,8 +1812,16 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (winnerFxTimerRef.current) window.clearTimeout(winnerFxTimerRef.current);
+      if (cinematicTimerRef.current) window.clearTimeout(cinematicTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TV_SOUND_ENABLED_KEY, soundEnabled ? "1" : "0");
+      localStorage.setItem(TV_SOUND_VOLUME_KEY, String(soundVolume));
+    } catch {}
+  }, [soundEnabled, soundVolume]);
 
   useEffect(() => {
     if (readOnlyMode) return;
@@ -2042,6 +2080,20 @@ export default function App() {
     if (tab === "SOIREE" && finalNightMode) return;
     setShowFinalNightBurst(false);
   }, [tab, finalNightMode]);
+
+  useEffect(() => {
+    if (!tvMode || tab !== "SOIREE" || !finalNightMode) {
+      setShowFinalNightIntro(false);
+      return;
+    }
+    const key = `${currentSeason.id}:${currentSoiree.id}:tv-intro`;
+    if (finalNightIntroKeyRef.current === key) return;
+    finalNightIntroKeyRef.current = key;
+    setShowFinalNightIntro(true);
+    playSfx("scene");
+    const t = window.setTimeout(() => setShowFinalNightIntro(false), 4200);
+    return () => window.clearTimeout(t);
+  }, [tvMode, tab, finalNightMode, currentSeason.id, currentSoiree.id]);
 
   const soireePlayers = useMemo(() => {
     return uniq([...currentSoiree.pools.A, ...currentSoiree.pools.B].map(normName)).filter(isNonEmptyString);
@@ -2516,23 +2568,42 @@ export default function App() {
     CLASSEMENT: "Classement",
     H2H: "Confrontations",
   };
-  const tvScene = useMemo<TvScene>(() => {
+  const autoTvScene = useMemo<TvScene>(() => {
     if (!tvMode || tab !== "SOIREE") return "LIVE";
     const matches = currentSoiree.matches;
     const playedCount = matches.filter((m: CoreMatch) => Boolean(normName(m.winner))).length;
+    const running = matches.find((m: CoreMatch) => Boolean(m.startedAt) && !normName(m.winner));
     const final = matches.find((m: CoreMatch) => m.phase === "FINAL");
     const pfinal = matches.find((m: CoreMatch) => m.phase === "PFINAL");
     const finalReady = Boolean(final && normName(final.a) && normName(final.b));
     const finalDone = Boolean(final && normName(final.winner));
     const podiumDone = finalDone && Boolean(pfinal && normName(pfinal.winner));
+    const semisPlayed = matches.filter((m: CoreMatch) => m.phase === "DEMI" && Boolean(normName(m.winner))).length;
+    if (playedCount === 0) return "INTRO";
+    if (playedCount <= 2) return "LINEUP";
     if (podiumDone) return "PODIUM";
+    if (running && (running.phase === "FINAL" || running.phase === "DEMI")) return "CLUTCH";
     if (finalReady) return "FINALE";
-    if (playedCount === 0) return "WARMUP";
+    if (running) return "MATCHFOCUS";
+    if (playedCount < 4 || semisPlayed === 0) return "WARMUP";
     return "LIVE";
   }, [tvMode, tab, currentSoiree.matches]);
+  const tvScene: TvScene = tvSceneOverride || autoTvScene;
   const tvSceneMeta = useMemo(() => {
+    if (tvScene === "INTRO") {
+      return { label: "Intro", subtitle: "Ouverture broadcast • présentation de la soirée" };
+    }
+    if (tvScene === "LINEUP") {
+      return { label: "Lineup", subtitle: "Entrée des joueurs • début des affrontements" };
+    }
     if (tvScene === "WARMUP") {
       return { label: "Warmup", subtitle: "Ouverture de la soirée • mise en route des poules" };
+    }
+    if (tvScene === "MATCHFOCUS") {
+      return { label: "Match Focus", subtitle: "Caméra sur le match en cours • suivi détaillé" };
+    }
+    if (tvScene === "CLUTCH") {
+      return { label: "Clutch Time", subtitle: "Moment décisif • pression maximale" };
     }
     if (tvScene === "FINALE") {
       return { label: "Finale", subtitle: "Phases finales actives • tension maximale" };
@@ -2542,8 +2613,19 @@ export default function App() {
     }
     return { label: "Live", subtitle: "Rotation en cours • suivi des matchs en direct" };
   }, [tvScene]);
+  const tvSceneColor = useMemo(() => {
+    if (tvScene === "PODIUM") return "#eab308";
+    if (tvScene === "FINALE" || tvScene === "CLUTCH") return "#f97316";
+    if (tvScene === "INTRO" || tvScene === "LINEUP") return "#f43f5e";
+    if (tvScene === "WARMUP") return "#06b6d4";
+    return "#22c55e";
+  }, [tvScene]);
 
   const tvMomentLines = useMemo(() => {
+    if (cinematicMoment) {
+      return [cinematicMoment.title, ...cinematicMoment.lines].slice(0, 3);
+    }
+
     const auditMoments = state.system.audit
       .filter((a) =>
         ["Flow soirée", "Statut match", "Fin de soirée détectée", "Récupération rapide", "Suppression soirée"].includes(
@@ -2562,12 +2644,28 @@ export default function App() {
       .map((m: CoreMatch) => `Match #${m.order} • ${m.winner} bat ${m.winner === m.a ? m.b : m.a}`);
 
     return recentCompleted.length > 0 ? recentCompleted : ["Aucun moment clé pour l'instant."];
-  }, [state.system.audit, currentSoiree.matches]);
+  }, [state.system.audit, currentSoiree.matches, cinematicMoment]);
 
   const tvOverlayCards = useMemo(() => {
     const next = liveSchedule.nextMatch;
     const top3Season = seasonStats.table.slice(0, 3).map((r, idx: number) => `${idx + 1}. ${r.name} (${r.pts} pts)`);
     const top3Soiree = liveSoireeRanking.slice(0, 3).map((r, idx: number) => `${idx + 1}. ${r.name} (${r.pts} pts)`);
+    const runningMatches = currentSoiree.matches
+      .filter((m: CoreMatch) => Boolean(m.startedAt) && !normName(m.winner))
+      .sort((a: CoreMatch, b: CoreMatch) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
+      .slice(0, 2);
+    const lastWinners = [...currentSoiree.matches]
+      .filter((m: CoreMatch) => Boolean(normName(m.winner)))
+      .sort((a: CoreMatch, b: CoreMatch) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+      .slice(0, 8)
+      .map((m: CoreMatch) => normName(m.winner))
+      .filter(isNonEmptyString);
+    const formMap = new Map<string, number>();
+    lastWinners.forEach((p) => formMap.set(p, (formMap.get(p) ?? 0) + 1));
+    const formLines = [...formMap.entries()]
+      .sort((a: [string, number], b: [string, number]) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 3)
+      .map(([p, v], idx) => `${idx + 1}. ${p} • ${v}W / 8 derniers matchs`);
     return [
       {
         id: "next",
@@ -2590,13 +2688,31 @@ export default function App() {
         lines: top3Season.length > 0 ? top3Season : ["Aucun classement saison", "Ajoute des joueurs", "Puis génère une soirée"],
       },
       {
+        id: "tables",
+        tone: "cyan",
+        title: "Table en cours",
+        lines:
+          runningMatches.length > 0
+            ? runningMatches.map((m: CoreMatch) => `#${m.order} • ${m.a} vs ${m.b}`)
+            : [tvLiveFocus ? `${tvLiveFocus.a} vs ${tvLiveFocus.b}` : "Aucune table active", "Lance le prochain match", "Mode live prêt"],
+      },
+      {
+        id: "form",
+        tone: "emerald",
+        title: "Forme récente",
+        lines:
+          formLines.length > 0
+            ? formLines
+            : ["Pas assez d'historique", "Joue quelques matchs", "La forme apparaîtra ici"],
+      },
+      {
         id: "moments",
         tone: "fuchsia",
         title: "Moments clés",
         lines: tvMomentLines,
       },
     ] as const;
-  }, [liveSchedule.nextMatch, liveSchedule.nextReason, liveSchedule.remainingCount, liveSoireeRanking, seasonStats.table, tvMomentLines]);
+  }, [liveSchedule.nextMatch, liveSchedule.nextReason, liveSchedule.remainingCount, liveSoireeRanking, seasonStats.table, tvMomentLines, currentSoiree.matches, tvLiveFocus]);
 
   const tvOverlayCard = tvOverlayCards[tvOverlayIndex % Math.max(tvOverlayCards.length, 1)];
 
@@ -2670,6 +2786,7 @@ export default function App() {
     const previous = previousTvSceneRef.current;
     if (previous && previous !== tvScene) {
       setTvSceneFlash(tvScene);
+      playSfx("scene");
       const t = window.setTimeout(() => setTvSceneFlash(""), 1300);
       previousTvSceneRef.current = tvScene;
       return () => window.clearTimeout(t);
@@ -2681,6 +2798,12 @@ export default function App() {
     if (!tvMode) return;
     setOperatorFullscreen(false);
   }, [tvMode]);
+
+  useEffect(() => {
+    if (!tvMode || tab !== "SOIREE") {
+      setTvSceneOverride("");
+    }
+  }, [tvMode, tab]);
 
   useEffect(() => {
     const isTypingTarget = (target: EventTarget | null) => {
@@ -2842,7 +2965,92 @@ export default function App() {
   }
 
   function setBroadcastOverlay(kind: BroadcastOverlayKind) {
-    setTvBroadcastOverlayKind((prev) => (prev === kind ? "" : kind));
+    setTvBroadcastOverlayKind((prev) => {
+      const next = prev === kind ? "" : kind;
+      if (next) playSfx("scene");
+      return next;
+    });
+  }
+
+  function getAudioContext() {
+    if (audioCtxRef.current) return audioCtxRef.current;
+    const Ctx = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext | undefined;
+    if (!Ctx) return null;
+    const ctx = new Ctx();
+    audioCtxRef.current = ctx;
+    return ctx;
+  }
+
+  function playSfx(kind: SfxKind) {
+    if (!soundEnabled) return;
+    try {
+      const ctx = getAudioContext();
+      if (!ctx) return;
+      if (ctx.state === "suspended") void ctx.resume();
+      const baseGain = Math.max(0, Math.min(1, soundVolume / 100)) * 0.12;
+      const now = ctx.currentTime + 0.01;
+      const tones: Array<{ hz: number; duration: number; gain?: number; type?: OscillatorType; offset?: number }> =
+        kind === "checkout"
+          ? [
+              { hz: 880, duration: 0.06, type: "triangle" },
+              { hz: 1320, duration: 0.08, type: "triangle", offset: 0.065 },
+            ]
+          : kind === "clutch"
+            ? [
+                { hz: 440, duration: 0.06, type: "square" },
+                { hz: 660, duration: 0.07, type: "square", offset: 0.055 },
+                { hz: 990, duration: 0.08, type: "square", offset: 0.12 },
+              ]
+            : kind === "podium"
+              ? [
+                  { hz: 523, duration: 0.08, type: "triangle" },
+                  { hz: 659, duration: 0.08, type: "triangle", offset: 0.09 },
+                  { hz: 784, duration: 0.12, type: "triangle", offset: 0.18 },
+                ]
+              : kind === "scene"
+                ? [
+                    { hz: 370, duration: 0.05, type: "sine" },
+                    { hz: 554, duration: 0.06, type: "sine", offset: 0.05 },
+                  ]
+                : [
+                    { hz: 660, duration: 0.07, type: "sine" },
+                    { hz: 880, duration: 0.09, type: "sine", offset: 0.07 },
+                  ];
+
+      tones.forEach((t) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const startAt = now + (t.offset ?? 0);
+        const peak = Math.max(0.001, baseGain * (t.gain ?? 1));
+        osc.type = t.type ?? "sine";
+        osc.frequency.setValueAtTime(t.hz, startAt);
+        gain.gain.setValueAtTime(0.0001, startAt);
+        gain.gain.exponentialRampToValueAtTime(peak, startAt + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, startAt + t.duration);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(startAt);
+        osc.stop(startAt + t.duration + 0.02);
+      });
+    } catch {}
+  }
+
+  function pushCinematicMoment(
+    title: string,
+    lines: string[],
+    tone: CinematicMoment["tone"] = "cyan",
+    sound: SfxKind | "" = ""
+  ) {
+    const moment: CinematicMoment = {
+      id: uid("cm"),
+      title,
+      lines: lines.filter(isNonEmptyString).slice(0, 3),
+      tone,
+    };
+    setCinematicMoment(moment);
+    if (cinematicTimerRef.current) window.clearTimeout(cinematicTimerRef.current);
+    cinematicTimerRef.current = window.setTimeout(() => setCinematicMoment((prev) => (prev?.id === moment.id ? null : prev)), 3600);
+    if (sound) playSfx(sound);
   }
 
   function updateSeason(mutator: (season: Season) => Season) {
@@ -3812,6 +4020,17 @@ export default function App() {
     const target = currentSoiree.matches.find((m: CoreMatch) => m.id === matchId);
     const isValidChoice = Boolean(target && chosen && (chosen === normName(target.a) || chosen === normName(target.b)));
     const shouldTriggerWinnerFx = Boolean(isValidChoice && target && normName(target.winner) !== chosen);
+    const loser = isValidChoice && target ? (chosen === target.a ? target.b : target.a) : "";
+    const rankMap = new Map(seasonStats.table.map((r, idx: number) => [r.name, idx + 1] as const));
+    const winnerRank = rankMap.get(chosen) ?? seasonStats.table.length + 1;
+    const loserRank = rankMap.get(loser) ?? seasonStats.table.length + 1;
+    const isUpset = Boolean(isValidChoice && loser && winnerRank >= loserRank + 3);
+    const isCheckoutClutch = Boolean(
+      isValidChoice &&
+        target &&
+        target.checkoutBy &&
+        ((target.checkoutBy === "A" && chosen === target.a) || (target.checkoutBy === "B" && chosen === target.b))
+    );
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -3844,6 +4063,19 @@ export default function App() {
     } else if (!isValidChoice && flowMatchId === matchId) {
       setFlowMatchId("");
     }
+    if (isValidChoice) {
+      if (isCheckoutClutch) {
+        pushCinematicMoment("Checkout Clutch", [`${chosen} conclut sur checkout`, target?.phase ?? ""], "amber", "checkout");
+      } else if (target?.phase === "FINAL") {
+        pushCinematicMoment("Finale en feu", [`${chosen} prend la finale`, loser ? `contre ${loser}` : ""], "fuchsia", "clutch");
+      } else if (isUpset) {
+        pushCinematicMoment("Upset!", [`${chosen} surprend ${loser}`, "Renversement de tendance"], "emerald", "clutch");
+      } else if (target?.phase === "DEMI") {
+        pushCinematicMoment("Demi validée", [`${chosen} gagne sa demi-finale`], "cyan", "match");
+      } else {
+        playSfx("match");
+      }
+    }
     if (shouldTriggerWinnerFx) {
       setWinnerFxMatchId(matchId);
       if (winnerFxTimerRef.current) window.clearTimeout(winnerFxTimerRef.current);
@@ -3868,6 +4100,8 @@ export default function App() {
 
   function setMatchCheckoutBy(matchId: string, checkoutBy: "" | "A" | "B") {
     if (currentSoireeLocked) return;
+    const target = currentSoiree.matches.find((m: CoreMatch) => m.id === matchId);
+    const previousBy = target?.checkoutBy ?? "";
     updateSeason((season) => {
       const soirees = season.soirees.map((s: Soiree) => {
         if (s.number !== currentSoiree.number) return s;
@@ -3881,6 +4115,10 @@ export default function App() {
       });
       return { ...season, soirees };
     });
+    if (checkoutBy && checkoutBy !== previousBy) {
+      const player = checkoutBy === "A" ? target?.a : target?.b;
+      pushCinematicMoment("Bonus Checkout", [player ? `${player} active le bonus` : "Bonus checkout activé"], "amber", "checkout");
+    }
   }
 
   function swapMatchPlayers(matchId: string) {
@@ -4174,6 +4412,22 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showSoireeClosureModal, closureSoiree, readOnlyMode]);
 
+  useEffect(() => {
+    if (!showSoireeClosureModal || !closureSoiree) return;
+    playSfx("podium");
+    if (closureSoireePodium?.first) {
+      pushCinematicMoment(
+        `Podium validé • ${closureSeason.name}`,
+        [
+          `1. ${closureSoireePodium.first}`,
+          `2. ${closureSoireePodium.second || "—"} • 3. ${closureSoireePodium.third || "—"}`,
+        ],
+        "fuchsia"
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSoireeClosureModal, closureSoiree?.id]);
+
   const rankingTimeline = useMemo(() => {
     const players = currentSeason.players;
     const soirees = [...currentSeason.soirees].sort((a: Soiree, b: Soiree) => a.number - b.number);
@@ -4372,6 +4626,12 @@ export default function App() {
           <div className="final-night-burst-title">FINAL NIGHT</div>
         </div>
       )}
+      {showFinalNightIntro && tvMode && tab === "SOIREE" && finalNightMode && (
+        <div className="final-night-intro" aria-hidden="true">
+          <div className="final-night-intro-title">DARTS LEAGUE • FINAL NIGHT</div>
+          <div className="final-night-intro-subtitle">{currentSeason.name} • Soirée {currentSoiree.number}</div>
+        </div>
+      )}
       <div className="mx-auto max-w-6xl px-4 pt-6 pb-24 md:pb-6">
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div className="flex-1">
@@ -4508,9 +4768,26 @@ export default function App() {
                 <div className="mt-1 text-xl font-extrabold">{tvSceneMeta.label}</div>
                 <div className="text-xs text-white/70">{tvSceneMeta.subtitle}</div>
               </div>
-              <Pill color={tvScene === "PODIUM" ? "#eab308" : tvScene === "FINALE" ? "#f97316" : tvScene === "WARMUP" ? "#06b6d4" : "#22c55e"}>
+              <Pill color={tvSceneColor}>
                 {tvScene}
               </Pill>
+            </div>
+          </div>
+        )}
+
+        {tvMode && tab === "SOIREE" && tvLiveFocus && (
+          <div className="mb-4 tv-lower-third rounded-2xl border border-white/10 bg-black/45 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="text-[11px] uppercase tracking-[0.22em] text-white/60">
+                Match Focus • Table Live
+              </div>
+              <div className="text-xs text-white/60">
+                #{tvLiveFocus.order} • {tvLiveFocus.phase}
+                {tvLiveFocus.pool ? ` ${tvLiveFocus.pool}` : ""}
+              </div>
+            </div>
+            <div className="mt-1 text-xl font-extrabold">
+              {tvLiveFocus.a || "—"} <span className="text-white/40">VS</span> {tvLiveFocus.b || "—"}
             </div>
           </div>
         )}
@@ -4526,6 +4803,18 @@ export default function App() {
                 : tvBroadcastOverlayKind === "PAUSE"
                   ? "Pause en cours • reprise imminente"
                   : normName(tvBroadcastAnnouncement) || "Annonce officielle"}
+            </div>
+          </div>
+        )}
+
+        {tvMode && tab === "SOIREE" && cinematicMoment && (
+          <div className={`mb-4 rounded-2xl border px-4 py-3 tv-cinematic-overlay tv-overlay-${cinematicMoment.tone}`}>
+            <div className="text-[11px] uppercase tracking-[0.28em] text-white/70">Moment Cinématique</div>
+            <div className="mt-1 text-lg font-extrabold">{cinematicMoment.title}</div>
+            <div className="mt-1 space-y-0.5 text-sm text-white/80">
+              {cinematicMoment.lines.map((line, idx: number) => (
+                <div key={`${cinematicMoment.id}-line-${idx}`}>{line}</div>
+              ))}
             </div>
           </div>
         )}
@@ -4638,6 +4927,26 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tvMode && tab === "SOIREE" && finalNightMode && !currentPodium.provisional && (
+          <div className="mb-6 final-night-credits rounded-2xl border border-fuchsia-300/30 bg-black/50 p-4">
+            <div className="text-[11px] uppercase tracking-[0.28em] text-fuchsia-200/80">Final Night Credits</div>
+            <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-3">
+              <div className="rounded-xl border border-yellow-300/30 bg-yellow-500/10 px-3 py-2 text-sm">
+                <div className="text-xs text-yellow-100/80">Champion</div>
+                <div className="font-extrabold">{currentPodium.first || "—"}</div>
+              </div>
+              <div className="rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-sm">
+                <div className="text-xs text-white/70">Runner-up</div>
+                <div className="font-bold">{currentPodium.second || "—"}</div>
+              </div>
+              <div className="rounded-xl border border-orange-300/25 bg-orange-500/10 px-3 py-2 text-sm">
+                <div className="text-xs text-orange-100/80">Third Place</div>
+                <div className="font-bold">{currentPodium.third || "—"}</div>
               </div>
             </div>
           </div>
@@ -7454,6 +7763,26 @@ export default function App() {
                 Suivant (→)
               </Button>
             </div>
+            <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-2">
+              <div className="mb-2 text-xs text-white/60">Scènes broadcast</div>
+              <div className="flex flex-wrap gap-2">
+                <Button variant={tvSceneOverride === "" ? "primary" : "ghost"} onClick={() => setTvSceneOverride("")}>
+                  Auto ({autoTvScene})
+                </Button>
+                {(["INTRO", "LINEUP", "MATCHFOCUS", "CLUTCH", "LIVE", "FINALE", "PODIUM"] as TvScene[]).map((scene) => (
+                  <Button
+                    key={scene}
+                    variant={tvSceneOverride === scene ? "primary" : "ghost"}
+                    onClick={() => {
+                      setTvSceneOverride((prev) => (prev === scene ? "" : scene));
+                      playSfx("scene");
+                    }}
+                  >
+                    {scene}
+                  </Button>
+                ))}
+              </div>
+            </div>
             <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
               {TV_TAB_CATALOG.map((item) => {
                 const enabled = tvRotationTabs.includes(item.tab);
@@ -7504,6 +7833,28 @@ export default function App() {
                 onChange={(e) => setTvBroadcastAnnouncement(e.target.value)}
                 placeholder="Texte annonce"
               />
+            </div>
+            <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-2">
+              <div className="mb-2 text-xs text-white/60">Sound design</div>
+              <div className="flex flex-wrap items-center gap-3">
+                <Button variant={soundEnabled ? "primary" : "ghost"} onClick={() => setSoundEnabled((v) => !v)}>
+                  {soundEnabled ? "Son ON" : "Son OFF"}
+                </Button>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-white/60">Volume</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={soundVolume}
+                    onChange={(e) => setSoundVolume(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+                  />
+                  <span className="text-xs text-white/70 w-8">{soundVolume}</span>
+                </div>
+                <Button variant="ghost" onClick={() => playSfx("scene")}>
+                  Test son
+                </Button>
+              </div>
             </div>
           </div>
         )}
