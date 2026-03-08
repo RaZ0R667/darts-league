@@ -179,6 +179,62 @@ body {
   animation: arenaSweep 4.2s ease-in-out infinite;
 }
 
+.tv-scene-transition {
+  position: relative;
+  overflow: hidden;
+  animation: tvSceneTransitionIn 1.2s ease;
+}
+
+.tv-scene-transition::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(110deg, transparent 12%, rgba(34, 211, 238, 0.28) 38%, transparent 68%);
+  transform: translateX(-130%);
+  animation: tvSceneTransitionSweep 1.25s ease;
+}
+
+.tv-overlay-card {
+  position: relative;
+  overflow: hidden;
+  animation: tvOverlayIn 0.55s ease;
+}
+
+.tv-overlay-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 16%, rgba(255, 255, 255, 0.2) 44%, transparent 70%);
+  transform: translateX(-130%);
+  animation: tvOverlaySweep 3.2s ease-in-out infinite;
+}
+
+.tv-overlay-line {
+  animation: tvOverlayLine 0.4s ease both;
+}
+
+.tv-overlay-cyan {
+  border-color: rgba(34, 211, 238, 0.25);
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.14), rgba(0, 0, 0, 0.35));
+}
+
+.tv-overlay-emerald {
+  border-color: rgba(16, 185, 129, 0.25);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.14), rgba(0, 0, 0, 0.35));
+}
+
+.tv-overlay-amber {
+  border-color: rgba(251, 191, 36, 0.3);
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.16), rgba(0, 0, 0, 0.36));
+}
+
+.tv-overlay-fuchsia {
+  border-color: rgba(232, 121, 249, 0.28);
+  background: linear-gradient(135deg, rgba(232, 121, 249, 0.16), rgba(0, 0, 0, 0.36));
+}
+
 .app-shell.tv-mode::before {
   content: "";
   position: fixed;
@@ -214,6 +270,33 @@ body {
   15% { opacity: 0.5; }
   45% { opacity: 0.75; }
   100% { transform: translateX(140%); opacity: 0; }
+}
+
+@keyframes tvSceneTransitionIn {
+  0% { opacity: 0; transform: translateY(10px) scale(0.98); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes tvSceneTransitionSweep {
+  0% { transform: translateX(-130%); opacity: 0; }
+  20% { opacity: 0.7; }
+  100% { transform: translateX(130%); opacity: 0; }
+}
+
+@keyframes tvOverlayIn {
+  0% { opacity: 0; transform: translateY(8px) scale(0.995); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes tvOverlaySweep {
+  0% { transform: translateX(-130%); opacity: 0; }
+  18% { opacity: 0.45; }
+  100% { transform: translateX(140%); opacity: 0; }
+}
+
+@keyframes tvOverlayLine {
+  0% { opacity: 0; transform: translateX(-6px); }
+  100% { opacity: 1; transform: translateX(0); }
 }
 
 .tv-spotlight {
@@ -282,6 +365,14 @@ body {
 
 .winner-row {
   background: rgba(34, 197, 94, 0.08);
+}
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgba(125, 211, 252, 0.9);
+  outline-offset: 2px;
 }
 
 @keyframes winnerPulse {

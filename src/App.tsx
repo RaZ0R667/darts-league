@@ -189,17 +189,28 @@ type SharedPayload = {
   rulesPdfName?: string;
 };
 
+type PersistEnvelope = {
+  kind: "DL_PERSIST_V1";
+  savedAt: number;
+  checksum: string;
+  state: AppState;
+};
+
 const SNAPSHOTS_KEY = "darts_league_snapshots_v1";
 const MAX_SNAPSHOTS = 30;
 const SYNC_CODE_KEY = "darts_league_sync_code_v1";
 const SYNC_ENABLED_KEY = "darts_league_sync_enabled_v1";
 const RULES_PDF_DATA_KEY = "darts_league_rules_pdf_data_v1";
 const RULES_PDF_NAME_KEY = "darts_league_rules_pdf_name_v1";
+const STORAGE_RECOVERY_KEY = "darts_league_recovery_v1";
+const STORAGE_HISTORY_KEY = "darts_league_history_v1";
+const MAX_STORAGE_HISTORY = 8;
 
 const SUPABASE_URL = (import.meta as any)?.env?.VITE_SUPABASE_URL ?? "";
 const SUPABASE_ANON_KEY = (import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY ?? "";
 
 let __supabaseClient: SupabaseClient | null = null;
+let BOOT_RECOVERY_NOTICE = "";
 
 function getSupabaseClient(): SupabaseClient | null {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
@@ -256,6 +267,69 @@ function hashString(s: string) {
     h |= 0;
   }
   return Math.abs(h);
+}
+
+function checksumOf(raw: string) {
+  return String(hashString(raw));
+}
+
+function encodePersistEnvelope(state: AppState) {
+  const stateRaw = JSON.stringify(state);
+  const envelope: PersistEnvelope = {
+    kind: "DL_PERSIST_V1",
+    savedAt: Date.now(),
+    checksum: checksumOf(stateRaw),
+    state: sanitizeState(JSON.parse(stateRaw)),
+  };
+  return JSON.stringify(envelope);
+}
+
+function parsePersistedStateRaw(raw: string): { state: AppState | null; integrityOk: boolean; reason?: string } {
+  try {
+    const parsed = JSON.parse(raw);
+    const isEnvelope =
+      parsed &&
+      typeof parsed === "object" &&
+      parsed.kind === "DL_PERSIST_V1" &&
+      typeof parsed.checksum === "string" &&
+      parsed.state &&
+      typeof parsed.state === "object";
+    if (!isEnvelope) {
+      return { state: sanitizeState(parsed), integrityOk: true };
+    }
+
+    const stateRaw = JSON.stringify(parsed.state);
+    const expected = checksumOf(stateRaw);
+    if (expected !== parsed.checksum) {
+      return { state: null, integrityOk: false, reason: "checksum_mismatch" };
+    }
+    return { state: sanitizeState(parsed.state), integrityOk: true };
+  } catch {
+    return { state: null, integrityOk: false, reason: "json_parse_error" };
+  }
+}
+
+function readRecoveryCandidates(): Array<{ key: string; state: AppState }> {
+  if (typeof window === "undefined") return [];
+  const out: Array<{ key: string; state: AppState }> = [];
+  try {
+    const recoveryRaw = localStorage.getItem(STORAGE_RECOVERY_KEY);
+    if (recoveryRaw) {
+      const parsed = parsePersistedStateRaw(recoveryRaw);
+      if (parsed.state) out.push({ key: "recovery", state: parsed.state });
+    }
+  } catch {}
+  try {
+    const historyRaw = localStorage.getItem(STORAGE_HISTORY_KEY);
+    const history = historyRaw ? (JSON.parse(historyRaw) as string[]) : [];
+    if (Array.isArray(history)) {
+      for (const item of history) {
+        const parsed = parsePersistedStateRaw(String(item));
+        if (parsed.state) out.push({ key: "history", state: parsed.state });
+      }
+    }
+  } catch {}
+  return out;
 }
 
 function getRules(profile: RulesProfile, customRules: RulesConfig): RulesConfig {
@@ -1112,9 +1186,22 @@ function sanitizeState(raw: any): AppState {
 }
 
 function loadState(): AppState {
+  BOOT_RECOVERY_NOTICE = "";
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return sanitizeState(JSON.parse(raw));
+    if (raw) {
+      const parsed = parsePersistedStateRaw(raw);
+      if (parsed.state) return parsed.state;
+
+      const recovery = readRecoveryCandidates()[0];
+      if (recovery?.state) {
+        BOOT_RECOVERY_NOTICE =
+          "Intégrité locale détectée comme invalide. Une sauvegarde de récupération a été restaurée automatiquement.";
+        return recovery.state;
+      }
+      BOOT_RECOVERY_NOTICE =
+        "Intégrité locale invalide et aucune récupération trouvée. État initial chargé.";
+    }
   } catch {}
 
   try {
@@ -1132,12 +1219,20 @@ function loadState(): AppState {
 }
 
 function saveState(state: AppState) {
-  const raw = JSON.stringify(state);
+  const envelopeRaw = encodePersistEnvelope(state);
   try {
-    localStorage.setItem(STORAGE_KEY, raw);
+    const previous = localStorage.getItem(STORAGE_KEY);
+    if (previous && previous !== envelopeRaw) {
+      localStorage.setItem(STORAGE_RECOVERY_KEY, previous);
+      const historyRaw = localStorage.getItem(STORAGE_HISTORY_KEY);
+      const history = historyRaw ? (JSON.parse(historyRaw) as string[]) : [];
+      const nextHistory = [previous, ...(Array.isArray(history) ? history : [])].slice(0, MAX_STORAGE_HISTORY);
+      localStorage.setItem(STORAGE_HISTORY_KEY, JSON.stringify(nextHistory));
+    }
+    localStorage.setItem(STORAGE_KEY, envelopeRaw);
   } catch {}
   try {
-    window.name = "DLSTATE:" + raw;
+    window.name = "DLSTATE:" + JSON.stringify(state);
   } catch {}
 }
 
@@ -1245,21 +1340,34 @@ function Button({
   onClick,
   variant = "primary",
   disabled,
+  title,
+  className,
+  size = "default",
 }: {
   children: React.ReactNode;
   onClick?: (e?: React.MouseEvent<HTMLButtonElement>) => void;
   variant?: "primary" | "ghost" | "danger";
   disabled?: boolean;
+  title?: string;
+  className?: string;
+  size?: "default" | "touch";
 }) {
-  const base = "rounded-xl px-3 py-2 text-sm font-semibold transition active:scale-[0.99]";
+  const base =
+    "rounded-xl px-3 py-2 text-sm font-semibold transition active:scale-[0.99] min-h-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/90 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0b0f17]";
   const styles =
     variant === "primary"
       ? "bg-white text-black hover:bg-white/90"
       : variant === "danger"
         ? "bg-red-500 text-white hover:bg-red-400"
         : "bg-white/10 text-white hover:bg-white/15";
+  const sizeStyles = size === "touch" ? "min-h-12 px-4 py-3 text-base" : "";
   return (
-    <button onClick={(e) => onClick?.(e)} disabled={disabled} className={`${base} ${styles} ${disabled ? "opacity-50" : ""}`}>
+    <button
+      title={title}
+      onClick={(e) => onClick?.(e)}
+      disabled={disabled}
+      className={`${base} ${styles} ${sizeStyles} ${disabled ? "opacity-50" : ""} ${className ?? ""}`}
+    >
       {children}
     </button>
   );
@@ -1307,6 +1415,8 @@ export default function App() {
   const [timelineStep, setTimelineStep] = useState(0);
   const [timelineSpeedMs, setTimelineSpeedMs] = useState(1200);
   const [performanceSort, setPerformanceSort] = useState<PerformanceSort>("POWER");
+  const [dataIntegrityNotice, setDataIntegrityNotice] = useState<string>(() => BOOT_RECOVERY_NOTICE);
+  const [quickRecoveryStatus, setQuickRecoveryStatus] = useState("");
   const [compactMode, setCompactMode] = useState<boolean>(() => {
     try {
       return localStorage.getItem("dl_compact_mode") === "1";
@@ -1371,6 +1481,8 @@ export default function App() {
   const [funPlayerInput, setFunPlayerInput] = useState("");
   const [funLiveEnabled, setFunLiveEnabled] = useState(false);
   const [funLiveIndex, setFunLiveIndex] = useState(0);
+  const [tvOverlayIndex, setTvOverlayIndex] = useState(0);
+  const [tvSceneFlash, setTvSceneFlash] = useState<TvScene | "">("");
   const currentSeasons: Season[] = state.seasons;
   const [selectedSoireeNumber, setSelectedSoireeNumber] = useState<number>(() => {
     const max = Math.max(...currentSeasons[0].soirees.map((s: Soiree) => s.number));
@@ -1386,6 +1498,8 @@ export default function App() {
   const skipNextCloudPushRef = useRef(false);
   const closureAutoExportDoneRef = useRef<string>("");
   const finalNightBurstKeyRef = useRef("");
+  const smartConfirmMemoryRef = useRef<Record<string, number>>({});
+  const previousTvSceneRef = useRef<TvScene | null>(null);
 
   const currentSeason = useMemo<Season>(() => {
     return currentSeasons.find((s: Season) => s.id === state.activeSeasonId) ?? currentSeasons[0];
@@ -2023,6 +2137,63 @@ export default function App() {
     return { label: "Live", subtitle: "Rotation en cours • suivi des matchs en direct" };
   }, [tvScene]);
 
+  const tvMomentLines = useMemo(() => {
+    const auditMoments = state.system.audit
+      .filter((a) =>
+        ["Flow soirée", "Statut match", "Fin de soirée détectée", "Récupération rapide", "Suppression soirée"].includes(
+          a.action
+        )
+      )
+      .slice(0, 3)
+      .map((a) => `${new Date(a.ts).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })} • ${a.action}${a.details ? ` (${a.details})` : ""}`);
+
+    if (auditMoments.length > 0) return auditMoments;
+
+    const recentCompleted = [...currentSoiree.matches]
+      .filter((m: CoreMatch) => Boolean(normName(m.winner)))
+      .sort((a: CoreMatch, b: CoreMatch) => b.order - a.order)
+      .slice(0, 3)
+      .map((m: CoreMatch) => `Match #${m.order} • ${m.winner} bat ${m.winner === m.a ? m.b : m.a}`);
+
+    return recentCompleted.length > 0 ? recentCompleted : ["Aucun moment clé pour l'instant."];
+  }, [state.system.audit, currentSoiree.matches]);
+
+  const tvOverlayCards = useMemo(() => {
+    const next = liveSchedule.nextMatch;
+    const top3Season = seasonStats.table.slice(0, 3).map((r, idx: number) => `${idx + 1}. ${r.name} (${r.pts} pts)`);
+    const top3Soiree = liveSoireeRanking.slice(0, 3).map((r, idx: number) => `${idx + 1}. ${r.name} (${r.pts} pts)`);
+    return [
+      {
+        id: "next",
+        tone: "cyan",
+        title: "Prochain match",
+        lines: next
+          ? [`#${next.order} • ${next.a} vs ${next.b}`, next.pool ? `Poule ${next.pool}` : next.phase, liveSchedule.nextReason || "Prêt à lancer"]
+          : ["Aucun match jouable immédiat", "Vérifie présences / retardataires", liveSchedule.remainingCount === 0 ? "Soirée complétée" : "En attente"],
+      },
+      {
+        id: "score",
+        tone: "emerald",
+        title: "Score live soirée",
+        lines: top3Soiree.length > 0 ? top3Soiree : ["Aucun score disponible", "Lance un match", "Le top 3 apparaîtra ici"],
+      },
+      {
+        id: "top",
+        tone: "amber",
+        title: "Top 3 saison",
+        lines: top3Season.length > 0 ? top3Season : ["Aucun classement saison", "Ajoute des joueurs", "Puis génère une soirée"],
+      },
+      {
+        id: "moments",
+        tone: "fuchsia",
+        title: "Moments clés",
+        lines: tvMomentLines,
+      },
+    ] as const;
+  }, [liveSchedule.nextMatch, liveSchedule.nextReason, liveSchedule.remainingCount, liveSoireeRanking, seasonStats.table, tvMomentLines]);
+
+  const tvOverlayCard = tvOverlayCards[tvOverlayIndex % Math.max(tvOverlayCards.length, 1)];
+
   const allNavTabs: Array<[AppTab, string]> = [
     ["SOIREE", "Soirée"],
     ["CLASSEMENT", "Classement"],
@@ -2061,6 +2232,90 @@ export default function App() {
     return () => window.clearInterval(handle);
   }, [tvMode, tvTabs.length]);
 
+  useEffect(() => {
+    if (!tvMode || tab !== "SOIREE") return;
+    setTvOverlayIndex(0);
+    const handle = window.setInterval(() => {
+      setTvOverlayIndex((prev) => (prev + 1) % Math.max(tvOverlayCards.length, 1));
+    }, 5200);
+    return () => window.clearInterval(handle);
+  }, [tvMode, tab, tvOverlayCards.length]);
+
+  useEffect(() => {
+    if (!tvMode || tab !== "SOIREE") {
+      previousTvSceneRef.current = tvScene;
+      setTvSceneFlash("");
+      return;
+    }
+    const previous = previousTvSceneRef.current;
+    if (previous && previous !== tvScene) {
+      setTvSceneFlash(tvScene);
+      const t = window.setTimeout(() => setTvSceneFlash(""), 1300);
+      previousTvSceneRef.current = tvScene;
+      return () => window.clearTimeout(t);
+    }
+    previousTvSceneRef.current = tvScene;
+  }, [tvMode, tab, tvScene]);
+
+  useEffect(() => {
+    if (readOnlyMode) return;
+    const isEditableTarget = (target: EventTarget | null) => {
+      const el = target as HTMLElement | null;
+      if (!el) return false;
+      const tag = el.tagName?.toLowerCase?.() ?? "";
+      if (tag === "input" || tag === "textarea" || tag === "select") return true;
+      return Boolean(el.closest("[contenteditable='true']"));
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isEditableTarget(e.target)) return;
+
+      if (e.altKey) {
+        const nextTab = (() => {
+          if (e.key === "1") return "SOIREE";
+          if (e.key === "2") return "CLASSEMENT";
+          if (e.key === "3") return "HISTO";
+          if (e.key === "4") return "REBUY";
+          if (e.key === "5") return "H2H";
+          if (e.key === "6") return "PARAMS";
+          return null;
+        })();
+        if (nextTab) {
+          e.preventDefault();
+          setTab(nextTab);
+          return;
+        }
+      }
+
+      if (tab !== "SOIREE") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      const key = e.key.toLowerCase();
+      if (key === "n") {
+        e.preventDefault();
+        if (liveSchedule.nextMatch && !currentSoireeLocked) launchNextRecommendedMatch();
+        return;
+      }
+      if (key === "t") {
+        e.preventDefault();
+        if (currentSoireeLocked) return;
+        if (!soireeTiming.startedAt || soireeTiming.endedAt) startSoireeTimer();
+        else stopSoireeTimer();
+        return;
+      }
+      if (key === "l") {
+        e.preventDefault();
+        if (confirmSmart("toggle-lock", currentSoireeLocked ? "Déverrouiller la soirée ?" : "Verrouiller la soirée ?")) {
+          setCurrentSoireeLocked(!currentSoireeLocked);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readOnlyMode, tab, liveSchedule.nextMatch, currentSoireeLocked, soireeTiming.startedAt, soireeTiming.endedAt]);
+
   function updateSeason(mutator: (season: Season) => Season) {
     setState((prev) => {
       if (readOnlyMode) return prev;
@@ -2078,6 +2333,31 @@ export default function App() {
       ...system,
       audit: [{ id: uid("audit"), ts: Date.now(), action, details }, ...system.audit].slice(0, 300),
     }));
+  }
+
+  function confirmSmart(key: string, message: string, e?: React.MouseEvent<HTMLButtonElement>) {
+    if (e?.shiftKey) return true;
+    const now = Date.now();
+    const validUntil = smartConfirmMemoryRef.current[key] ?? 0;
+    if (validUntil > now) return true;
+    const ok = window.confirm(`${message}\n\nAstuce: maintiens Shift en cliquant pour confirmer directement.`);
+    if (ok) smartConfirmMemoryRef.current[key] = now + 12000;
+    return ok;
+  }
+
+  function runQuickRecovery() {
+    if (readOnlyMode) return;
+    const candidates = readRecoveryCandidates();
+    const candidate = candidates[0];
+    if (!candidate?.state) {
+      setQuickRecoveryStatus("Aucune sauvegarde de récupération disponible.");
+      return;
+    }
+    historyNavRef.current = true;
+    setState(sanitizeState(candidate.state));
+    setQuickRecoveryStatus("Récupération locale appliquée.");
+    setDataIntegrityNotice("Récupération rapide appliquée depuis la sauvegarde locale versionnée.");
+    logAudit("Récupération rapide", candidate.key);
   }
 
   function createSnapshot(label = "Manuel") {
@@ -2631,7 +2911,7 @@ export default function App() {
       alert("Tu dois garder au moins une soirée dans la saison.");
       return;
     }
-    const ok = window.confirm(`Supprimer définitivement la soirée ${soireeNumber} ?`);
+    const ok = confirmSmart("delete-soiree", `Supprimer définitivement la soirée ${soireeNumber} ?`);
     if (!ok) return;
 
     const remaining = currentSeason.soirees.filter((s) => s.number !== soireeNumber);
@@ -3648,12 +3928,28 @@ export default function App() {
             </Button>
             )}
             {!tvMode && !readOnlyMode && (
-              <Button variant="danger" onClick={() => resetAll()}>
+              <Button variant="danger" onClick={(e) => confirmSmart("reset-all", "Confirmer le reset complet ? Cette action supprime la saison en cours.", e) && resetAll()}>
                 Reset complet
               </Button>
             )}
           </div>
         </div>
+
+        {dataIntegrityNotice && !readOnlyMode && (
+          <div className="mb-4 rounded-2xl border border-amber-300/35 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>{dataIntegrityNotice}</div>
+              <div className="flex gap-2">
+                <Button variant="ghost" onClick={() => runQuickRecovery()} title="Restaurer la sauvegarde de récupération locale" size="touch">
+                  Récupération rapide
+                </Button>
+                <Button variant="ghost" onClick={() => setDataIntegrityNotice("")}>
+                  Fermer
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {tvMode && tab !== "CLASSEMENT" && (
           <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -3697,6 +3993,26 @@ export default function App() {
               <Pill color={tvScene === "PODIUM" ? "#eab308" : tvScene === "FINALE" ? "#f97316" : tvScene === "WARMUP" ? "#06b6d4" : "#22c55e"}>
                 {tvScene}
               </Pill>
+            </div>
+          </div>
+        )}
+
+        {tvMode && tab === "SOIREE" && tvSceneFlash && (
+          <div className="mb-4 rounded-2xl border border-cyan-300/25 bg-cyan-500/10 px-4 py-3 tv-scene-transition">
+            <div className="text-[11px] uppercase tracking-[0.28em] text-cyan-100/80">Transition scène</div>
+            <div className="mt-1 text-lg font-extrabold">Mode {tvSceneFlash}</div>
+          </div>
+        )}
+
+        {tvMode && tab === "SOIREE" && tvOverlayCard && (
+          <div className={`mb-4 rounded-2xl border px-4 py-3 tv-overlay-card tv-overlay-${tvOverlayCard.tone}`} key={`${tvOverlayCard.id}-${tvOverlayIndex}`}>
+            <div className="text-[11px] uppercase tracking-[0.28em] text-white/70">{tvOverlayCard.title}</div>
+            <div className="mt-2 space-y-1 text-sm">
+              {tvOverlayCard.lines.slice(0, 3).map((line, idx: number) => (
+                <div key={`${tvOverlayCard.id}-line-${idx}`} className="tv-overlay-line">
+                  {line}
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -4438,8 +4754,38 @@ export default function App() {
                     </label>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    <Button variant="ghost" onClick={() => launchNextRecommendedMatch()} disabled={!liveSchedule.nextMatch || readOnlyMode || currentSoireeLocked}>
+                    <Button
+                      variant="ghost"
+                      size="touch"
+                      title="Raccourci clavier: N"
+                      onClick={() => launchNextRecommendedMatch()}
+                      disabled={!liveSchedule.nextMatch || readOnlyMode || currentSoireeLocked}
+                    >
                       Lancer prochain match
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="touch"
+                      title="Raccourci clavier: T"
+                      onClick={() => (!soireeTiming.startedAt || soireeTiming.endedAt ? startSoireeTimer() : stopSoireeTimer())}
+                      disabled={readOnlyMode || currentSoireeLocked}
+                    >
+                      {!soireeTiming.startedAt || soireeTiming.endedAt ? "Démarrer chrono" : "Stop chrono"}
+                    </Button>
+                    <Button
+                      variant={currentSoireeLocked ? "danger" : "ghost"}
+                      size="touch"
+                      title="Raccourci clavier: L"
+                      onClick={(e) =>
+                        confirmSmart(
+                          "toggle-lock",
+                          currentSoireeLocked ? "Déverrouiller la soirée ?" : "Verrouiller la soirée ?",
+                          e
+                        ) && setCurrentSoireeLocked(!currentSoireeLocked)
+                      }
+                      disabled={readOnlyMode}
+                    >
+                      {currentSoireeLocked ? "Déverrouiller" : "Verrouiller"}
                     </Button>
                     {flowCurrentMatch && (
                       <Button variant="ghost" onClick={() => focusMatchInPlanning(flowCurrentMatch.id)}>
@@ -4451,6 +4797,9 @@ export default function App() {
                     {flowCurrentMatch
                       ? `En cours: #${flowCurrentMatch.order} — ${flowCurrentMatch.a} vs ${flowCurrentMatch.b}`
                       : "Aucun match flow actif. Lance le prochain match recommandé."}
+                  </div>
+                  <div className="mt-2 text-[11px] text-cyan-100/70">
+                    Raccourcis opérateur: <span className="font-semibold">Alt+1..6</span> navigation, <span className="font-semibold">N</span> prochain match, <span className="font-semibold">T</span> chrono, <span className="font-semibold">L</span> verrouillage.
                   </div>
                 </div>
 
@@ -5924,6 +6273,9 @@ export default function App() {
                     <Button variant="ghost" onClick={() => redoLastAction()}>
                       Redo
                     </Button>
+                    <Button variant="ghost" onClick={() => runQuickRecovery()}>
+                      Récupération rapide
+                    </Button>
                   </div>
                   <div className="mt-2 space-y-1">
                     {snapshots.slice(0, 4).map((snap) => (
@@ -5938,6 +6290,7 @@ export default function App() {
                     ))}
                     {snapshots.length === 0 && <div className="text-xs text-white/50">Aucun snapshot.</div>}
                   </div>
+                  {quickRecoveryStatus && <div className="mt-2 text-xs text-cyan-200">{quickRecoveryStatus}</div>}
                 </div>
 
                 <div className="rounded-xl border border-white/10 bg-black/30 p-3">
