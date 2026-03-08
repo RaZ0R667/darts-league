@@ -656,6 +656,10 @@ function useGlobalTop4Qualification(soiree: Soiree) {
   return isFairSoireeMode(soiree) || soiree.tournamentFormat === "ROUND_ROBIN" || soiree.tournamentFormat === "SWISS_LITE" || soiree.tournamentFormat === "DOUBLE_ELIM_LITE";
 }
 
+function usePlacementScoringForSeason(soiree: Soiree) {
+  return isFairSoireeMode(soiree) || soiree.tournamentFormat === "ROUND_ROBIN";
+}
+
 function getMatchWinPointsForSoiree(match: CoreMatch, rules: RulesConfig, ctx: ResolvedRuleContext) {
   const base = match.phase === "PFINAL" ? rules.smallFinalPoints : rules.winPoints;
   return base * ctx.matchWinMultiplier;
@@ -721,7 +725,7 @@ function computeSoireeRankingPoints(
 ) {
   const participants = uniq([...soiree.pools.A, ...soiree.pools.B]).filter(isNonEmptyString);
   if (!participants.length) return new Map<string, number>();
-  const fairMode = isFairSoireeMode(soiree);
+  const fairMode = useGlobalTop4Qualification(soiree);
 
   const poolA = computePoolRows(soiree, "A", season, rules, rulePolicies);
   const poolB = computePoolRows(soiree, "B", season, rules, rulePolicies);
@@ -822,7 +826,7 @@ function aggregateSeasonStats(
       rules,
       rulePolicies
     );
-    if (isFairSoireeMode(s)) {
+    if (usePlacementScoringForSeason(s)) {
       const soireePoints = computeSoireeRankingPoints(s, season, rules, rulePolicies);
       for (const [k, v] of soireePoints.entries()) add(pts, k, v);
     } else {
@@ -1017,6 +1021,10 @@ function computeSoireeRankingRows(
   rulePolicies: SoireeRulePolicy[] = DEFAULT_SOIREE_RULE_POLICIES
 ) {
   const participants = uniq([...soiree.pools.A, ...soiree.pools.B].map(normName)).filter(isNonEmptyString);
+  const usePlacementScoring = usePlacementScoringForSeason(soiree);
+  const placementPoints = usePlacementScoring
+    ? computeSoireeRankingPoints(soiree, season, rules, rulePolicies)
+    : null;
   const { pts, wins, bonus } = computePointsFromMatches(
     soiree.matches,
     soiree.rebuys,
@@ -1027,11 +1035,13 @@ function computeSoireeRankingRows(
   );
   const rows = participants.map((p: string) => ({
     name: p,
-    pts: pts.get(p) ?? 0,
+    pts: usePlacementScoring ? placementPoints?.get(p) ?? 0 : pts.get(p) ?? 0,
     wins: wins.get(p) ?? 0,
     bonus: bonus.get(p) ?? 0,
   }));
-  rows.sort((a, b) => b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name));
+  rows.sort((a: { name: string; pts: number; wins: number; bonus: number }, b: { name: string; pts: number; wins: number; bonus: number }) =>
+    b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name)
+  );
   return rows;
 }
 
@@ -2178,31 +2188,9 @@ export default function App() {
   }, [clockNow, currentSoiree.matches, currentSoiree.arrivalEta, soireeAttendance, soireeTiming.avgMatchMs]);
 
   const liveSoireeRanking = useMemo(() => {
-    const participants = uniq([...currentSoiree.pools.A, ...currentSoiree.pools.B].map(normName)).filter(isNonEmptyString);
-    const { pts, wins, bonus } = computePointsFromMatches(
-      currentSoiree.matches,
-      currentSoiree.rebuys,
-      currentSoiree.number,
-      currentSeason,
-      effectiveRules,
-      activeSoireeRulePolicies
-    );
-    const rows = participants.map((p: string) => ({
-      name: p,
-      pts: pts.get(p) ?? 0,
-      wins: wins.get(p) ?? 0,
-      bonus: bonus.get(p) ?? 0,
-    }));
-    rows.sort((a: { name: string; pts: number; wins: number; bonus: number }, b: { name: string; pts: number; wins: number; bonus: number }) =>
-      b.pts - a.pts || b.wins - a.wins || b.bonus - a.bonus || a.name.localeCompare(b.name)
-    );
-    return rows;
+    return computeSoireeRankingRows(currentSoiree, currentSeason, effectiveRules, activeSoireeRulePolicies);
   }, [
-    currentSoiree.matches,
-    currentSoiree.rebuys,
-    currentSoiree.number,
-    currentSoiree.pools.A,
-    currentSoiree.pools.B,
+    currentSoiree,
     currentSeason,
     effectiveRules,
     activeSoireeRulePolicies,
@@ -4533,7 +4521,9 @@ export default function App() {
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
-                <div className="text-xs uppercase tracking-[0.2em] text-white/50">Classement live (soirée)</div>
+                <div className="text-xs uppercase tracking-[0.2em] text-white/50">
+                  Classement live (soirée{currentSoiree.tournamentFormat === "ROUND_ROBIN" ? " • points de position" : ""})
+                </div>
                 <div className="mt-2 space-y-1 text-sm">
                   {liveSoireeRanking.slice(0, 5).map((r, idx: number) => (
                     <div key={r.name} className="flex items-center justify-between rounded-lg bg-black/25 px-2 py-1">
@@ -7531,7 +7521,7 @@ export default function App() {
                 />
                 <div className="mt-1 text-[11px] text-white/50">
                   {newSoireeFormat === "CLASSIC_POOLS" && "Format ligue classique: poules A/B puis demis/finales."}
-                  {newSoireeFormat === "ROUND_ROBIN" && "Tous contre tous (5-8 joueurs), puis Top 4 en demis."}
+                  {newSoireeFormat === "ROUND_ROBIN" && "Tous contre tous (5-8 joueurs), puis Top 4 en demis. Points soirée = classement de position (N, N-1, ...)."}
                   {newSoireeFormat === "SWISS_LITE" && "Swiss Lite: ~3 matchs/joueur, puis Top 4 en demis."}
                   {newSoireeFormat === "DOUBLE_ELIM_LITE" && "Double Elim Lite: ~2 matchs/joueur (2 vies), puis Top 4 en demis."}
                 </div>
