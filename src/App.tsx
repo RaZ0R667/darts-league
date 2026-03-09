@@ -1776,6 +1776,7 @@ export default function App() {
   const [tvOverlayIndex, setTvOverlayIndex] = useState(0);
   const [tvSceneFlash, setTvSceneFlash] = useState<TvScene | "">("");
   const [cinematicMoment, setCinematicMoment] = useState<CinematicMoment | null>(null);
+  const [highlightIndex, setHighlightIndex] = useState(0);
   const [showFinalNightIntro, setShowFinalNightIntro] = useState(false);
   const [winnerFxMatchId, setWinnerFxMatchId] = useState("");
   const currentSeasons: Season[] = state.seasons;
@@ -2462,6 +2463,138 @@ export default function App() {
     return currentSoiree.matches.find((m: CoreMatch) => m.id === flowMatchId) ?? null;
   }, [flowMatchId, currentSoiree.matches]);
   const operatorFocusMatch = flowCurrentMatch ?? liveSchedule.nextMatch ?? null;
+  const liveSoireeRankingMap = useMemo(
+    () => new Map(liveSoireeRanking.map((row) => [row.name, row] as const)),
+    [liveSoireeRanking]
+  );
+  const tvNextMatch = useMemo(
+    () => liveSchedule.candidates.find((c) => c.match.id !== tvLiveFocus?.id)?.match ?? null,
+    [liveSchedule.candidates, tvLiveFocus?.id]
+  );
+  const tvPlayerCards = useMemo(() => {
+    if (!tvLiveFocus) return [];
+    const players = [normName(tvLiveFocus.a), normName(tvLiveFocus.b)].filter(isNonEmptyString);
+    const recentMatches = [...currentSoiree.matches]
+      .filter((m: CoreMatch) => Boolean(normName(m.winner)))
+      .sort((a: CoreMatch, b: CoreMatch) => b.order - a.order);
+    return players.map((name) => {
+      const seasonRow = seasonStats.table.find((r) => r.name === name);
+      const soireeRow = liveSoireeRankingMap.get(name);
+      const form = recentMatches
+        .filter((m: CoreMatch) => normName(m.a) === name || normName(m.b) === name)
+        .slice(0, 5)
+        .map((m: CoreMatch) => (normName(m.winner) === name ? "W" : "L"));
+      return {
+        name,
+        seasonRank: seasonRow ? seasonStats.table.findIndex((r) => r.name === name) + 1 : 0,
+        seasonPts: seasonRow?.pts ?? 0,
+        seasonWins: seasonRow?.wins ?? 0,
+        soireePts: soireeRow?.pts ?? 0,
+        soireeWins: soireeRow?.wins ?? 0,
+        form: form.join(" - ") || "N/A",
+      };
+    });
+  }, [tvLiveFocus, currentSoiree.matches, seasonStats.table, liveSoireeRankingMap]);
+
+  const buildSoireeHighlights = (
+    soiree: Soiree,
+    season: Season,
+    rankingRows: Array<{ name: string; pts: number; wins: number; bonus: number }>
+  ) => {
+    const highlights: Array<{ id: string; title: string; detail: string; tone: "cyan" | "emerald" | "amber" | "fuchsia" }> = [];
+    const completed = soiree.matches
+      .filter((m: CoreMatch) => Boolean(normName(m.winner)))
+      .sort((a: CoreMatch, b: CoreMatch) => a.order - b.order);
+    if (!completed.length) return highlights;
+
+    const mvp = rankingRows[0];
+    if (mvp) {
+      highlights.push({
+        id: "mvp",
+        title: `MVP: ${mvp.name}`,
+        detail: `${mvp.pts} pts • ${mvp.wins} victoires`,
+        tone: "emerald",
+      });
+    }
+
+    const checkout = [...completed]
+      .filter((m: CoreMatch) => Boolean(m.checkoutBy))
+      .sort((a: CoreMatch, b: CoreMatch) => b.order - a.order)[0];
+    if (checkout) {
+      highlights.push({
+        id: "checkout",
+        title: "Clutch Checkout",
+        detail: `${checkout.winner} • Match #${checkout.order} ${checkout.phase}`,
+        tone: "amber",
+      });
+    }
+
+    const seasonRanks = new Map(
+      aggregateSeasonStats(season, effectiveRules, activeSoireeRulePolicies).table.map((r, idx: number) => [r.name, idx + 1] as const)
+    );
+    let bestUpset: { winner: string; loser: string; diff: number } | null = null;
+    for (const m of completed) {
+      const w = normName(m.winner);
+      if (!w) continue;
+      const loser = w === normName(m.a) ? normName(m.b) : normName(m.a);
+      if (!loser) continue;
+      const wRank = seasonRanks.get(w) ?? 999;
+      const lRank = seasonRanks.get(loser) ?? 999;
+      const diff = wRank - lRank;
+      if (diff >= 3 && (!bestUpset || diff > bestUpset.diff)) {
+        bestUpset = { winner: w, loser, diff };
+      }
+    }
+    if (bestUpset) {
+      highlights.push({
+        id: "upset",
+        title: "Upset majeur",
+        detail: `${bestUpset.winner} bat ${bestUpset.loser} (+${bestUpset.diff} places)`,
+        tone: "fuchsia",
+      });
+    }
+
+    const streak = new Map<string, number>();
+    let bestStreak = { player: "", value: 0 };
+    for (const m of completed) {
+      const w = normName(m.winner);
+      const loser = w === normName(m.a) ? normName(m.b) : normName(m.a);
+      if (w) {
+        streak.set(w, (streak.get(w) ?? 0) + 1);
+        if ((streak.get(w) ?? 0) > bestStreak.value) bestStreak = { player: w, value: streak.get(w) ?? 0 };
+      }
+      if (loser) streak.set(loser, 0);
+    }
+    if (bestStreak.player && bestStreak.value >= 2) {
+      highlights.push({
+        id: "streak",
+        title: "Série du soir",
+        detail: `${bestStreak.player} enchaîne ${bestStreak.value} victoires`,
+        tone: "cyan",
+      });
+    }
+
+    const fastest = completed
+      .filter((m: CoreMatch) => Boolean(m.startedAt && m.endedAt))
+      .map((m: CoreMatch) => ({ m, d: (m.endedAt ?? 0) - (m.startedAt ?? 0) }))
+      .filter((x) => x.d > 0)
+      .sort((a, b) => a.d - b.d)[0];
+    if (fastest) {
+      highlights.push({
+        id: "fast",
+        title: "Match le plus rapide",
+        detail: `#${fastest.m.order} • ${formatDuration(fastest.d)}`,
+        tone: "amber",
+      });
+    }
+
+    return highlights.slice(0, 5);
+  };
+
+  const currentSoireeHighlights = useMemo(
+    () => buildSoireeHighlights(currentSoiree, currentSeason, liveSoireeRanking),
+    [currentSoiree, currentSeason, liveSoireeRanking, effectiveRules, activeSoireeRulePolicies]
+  );
 
 
   const currentPoolStandings = useMemo(() => {
@@ -2776,6 +2909,17 @@ export default function App() {
     }, 5200);
     return () => window.clearInterval(handle);
   }, [tvMode, tab, tvOverlayCards.length]);
+
+  useEffect(() => {
+    if (!tvMode || tab !== "SOIREE" || tvScene !== "PODIUM" || currentSoireeHighlights.length <= 1) {
+      setHighlightIndex(0);
+      return;
+    }
+    const handle = window.setInterval(() => {
+      setHighlightIndex((prev) => (prev + 1) % currentSoireeHighlights.length);
+    }, 4200);
+    return () => window.clearInterval(handle);
+  }, [tvMode, tab, tvScene, currentSoireeHighlights.length]);
 
   useEffect(() => {
     if (!tvMode || tab !== "SOIREE") {
@@ -4393,6 +4537,10 @@ export default function App() {
     if (!closureSoiree) return [];
     return computeSoireeRankingRows(closureSoiree, closureSeason, effectiveRules, activeSoireeRulePolicies);
   }, [closureSoiree, closureSeason, effectiveRules, activeSoireeRulePolicies]);
+  const closureSoireeHighlights = useMemo(() => {
+    if (!closureSoiree) return [];
+    return buildSoireeHighlights(closureSoiree, closureSeason, closureSoireeRankingRows);
+  }, [closureSoiree, closureSeason, closureSoireeRankingRows, effectiveRules, activeSoireeRulePolicies]);
 
   useEffect(() => {
     if (readOnlyMode) return;
@@ -4792,6 +4940,81 @@ export default function App() {
           </div>
         )}
 
+        {tvMode && tab === "SOIREE" && (
+          <div className="mb-4 tv-scoreboard-strip rounded-2xl border border-white/10 bg-black/45 px-4 py-3">
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+              <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-[0.18em] text-white/60">Scoreboard Live</div>
+                {tvLiveFocus ? (
+                  <div className="mt-1 text-sm font-semibold">
+                    {tvLiveFocus.a} <span className="text-white/40">vs</span> {tvLiveFocus.b}
+                  </div>
+                ) : (
+                  <div className="mt-1 text-sm text-white/70">Aucun match en focus</div>
+                )}
+                {tvLiveFocus && (
+                  <div className="mt-1 text-xs text-white/70">
+                    PTS soirée: {tvLiveFocus.a}{" "}
+                    <AnimatedMetric value={liveSoireeRankingMap.get(tvLiveFocus.a)?.pts ?? 0} kind="int" durationMs={420} /> •{" "}
+                    {tvLiveFocus.b} <AnimatedMetric value={liveSoireeRankingMap.get(tvLiveFocus.b)?.pts ?? 0} kind="int" durationMs={420} />
+                  </div>
+                )}
+              </div>
+              <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-[0.18em] text-white/60">Prochain Match</div>
+                {tvNextMatch ? (
+                  <>
+                    <div className="mt-1 text-sm font-semibold">
+                      #{tvNextMatch.order} • {tvNextMatch.a} vs {tvNextMatch.b}
+                    </div>
+                    <div className="mt-1 text-xs text-white/70">{tvNextMatch.phase}{tvNextMatch.pool ? ` • Poule ${tvNextMatch.pool}` : ""}</div>
+                  </>
+                ) : (
+                  <div className="mt-1 text-sm text-white/70">En attente / soirée terminée</div>
+                )}
+              </div>
+              <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-[0.18em] text-white/60">ETA Soirée</div>
+                <div className="mt-1 text-sm font-semibold">
+                  {soireeEta.expectedPlayableCount > 0 ? formatTimeHM(soireeEta.etaMs) : "—"}
+                </div>
+                <div className="mt-1 text-xs text-white/70">
+                  Restants: <AnimatedMetric value={soireeEta.expectedPlayableCount} kind="int" durationMs={420} /> matchs • {formatDuration(soireeEta.remainingMs)}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tvMode && tab === "SOIREE" && tvPlayerCards.length > 0 && (
+          <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+            {tvPlayerCards.map((p) => (
+              <div key={p.name} className="tv-player-card rounded-2xl border border-white/10 bg-black/45 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="h-3 w-3 rounded-full" style={{ background: getPlayerColor(p.name) }} />
+                    <div className="text-lg font-extrabold">{p.name}</div>
+                  </div>
+                  <Pill color="#38bdf8">Rank #{p.seasonRank || "—"}</Pill>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                  <div className="rounded-lg border border-white/10 bg-black/25 px-2 py-1">
+                    Saison: <span className="font-semibold"><AnimatedMetric value={p.seasonPts} kind="int" durationMs={380} /></span> pts •{" "}
+                    <span className="font-semibold"><AnimatedMetric value={p.seasonWins} kind="int" durationMs={380} /></span> V
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-black/25 px-2 py-1">
+                    Soirée: <span className="font-semibold"><AnimatedMetric value={p.soireePts} kind="int" durationMs={380} /></span> pts •{" "}
+                    <span className="font-semibold"><AnimatedMetric value={p.soireeWins} kind="int" durationMs={380} /></span> V
+                  </div>
+                </div>
+                <div className="mt-2 text-xs text-white/70">
+                  Forme récente: <span className="font-semibold text-white">{p.form}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {tvMode && tvBroadcastOverlayKind && (
           <div className={`mb-4 rounded-2xl border px-4 py-3 tv-broadcast-overlay tv-broadcast-${tvBroadcastOverlayKind.toLowerCase()}`}>
             <div className="text-[11px] uppercase tracking-[0.28em] text-white/70">
@@ -4816,6 +5039,19 @@ export default function App() {
                 <div key={`${cinematicMoment.id}-line-${idx}`}>{line}</div>
               ))}
             </div>
+          </div>
+        )}
+
+        {tvMode && tab === "SOIREE" && tvScene === "PODIUM" && currentSoireeHighlights.length > 0 && (
+          <div className="mb-4 tv-highlights-carousel rounded-2xl border border-white/10 bg-black/45 px-4 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[11px] uppercase tracking-[0.24em] text-white/60">Highlights Auto</div>
+              <Pill>
+                {Math.min(highlightIndex + 1, currentSoireeHighlights.length)}/{currentSoireeHighlights.length}
+              </Pill>
+            </div>
+            <div className="mt-1 text-lg font-extrabold">{currentSoireeHighlights[highlightIndex]?.title}</div>
+            <div className="text-sm text-white/80">{currentSoireeHighlights[highlightIndex]?.detail}</div>
           </div>
         )}
 
@@ -8095,6 +8331,20 @@ export default function App() {
                   ))}
                 </div>
               </div>
+
+              {closureSoireeHighlights.length > 0 && (
+                <div className="mt-3 rounded-xl border border-fuchsia-300/25 bg-fuchsia-500/10 p-3">
+                  <div className="text-xs text-fuchsia-100/80">Top Moments Auto</div>
+                  <div className="mt-2 space-y-1 text-sm">
+                    {closureSoireeHighlights.map((h, idx) => (
+                      <div key={h.id} className="rounded-lg bg-black/25 px-2 py-1">
+                        <div className="text-white/90 font-semibold">{idx + 1}. {h.title}</div>
+                        <div className="text-white/70 text-xs">{h.detail}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {closureAutoExportStatus && (
                 <div className="mt-3 rounded-xl border border-cyan-400/25 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">

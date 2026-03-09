@@ -326,6 +326,54 @@ body {
   animation: lowerThirdSweep 2.8s ease-in-out infinite;
 }
 
+.tv-scoreboard-strip {
+  position: relative;
+  overflow: hidden;
+  animation: lowerThirdIn 0.34s ease;
+}
+
+.tv-scoreboard-strip::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 14%, rgba(34, 211, 238, 0.14) 42%, transparent 72%);
+  transform: translateX(-130%);
+  animation: lowerThirdSweep 3.2s ease-in-out infinite;
+}
+
+.tv-player-card {
+  position: relative;
+  overflow: hidden;
+  animation: tvOverlayIn 0.4s ease;
+}
+
+.tv-player-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(108deg, transparent 16%, rgba(255, 255, 255, 0.14) 42%, transparent 72%);
+  transform: translateX(-130%);
+  animation: tvOverlaySweep 3.4s ease-in-out infinite;
+}
+
+.tv-highlights-carousel {
+  position: relative;
+  overflow: hidden;
+  animation: tvOverlayIn 0.45s ease;
+}
+
+.tv-highlights-carousel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(108deg, transparent 14%, rgba(244, 114, 182, 0.2) 42%, transparent 72%);
+  transform: translateX(-130%);
+  animation: tvOverlaySweep 2.9s ease-in-out infinite;
+}
+
 .app-shell.tv-mode::before {
   content: "";
   position: fixed;
@@ -803,6 +851,12 @@ textarea:focus-visible {
   .tv-cinematic-overlay::after,
   .tv-lower-third,
   .tv-lower-third::after,
+  .tv-scoreboard-strip,
+  .tv-scoreboard-strip::after,
+  .tv-player-card,
+  .tv-player-card::after,
+  .tv-highlights-carousel,
+  .tv-highlights-carousel::after,
   .final-night-intro,
   .final-night-credits::after {
     animation: none !important;
