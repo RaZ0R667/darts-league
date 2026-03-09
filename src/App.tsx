@@ -3147,6 +3147,33 @@ export default function App() {
     });
   }
 
+  function applyTv190Preset() {
+    setTvDisplayMode("BIGSCREEN");
+    setTvInfoDensity("FOCUS");
+    setTvSceneOverride("");
+    setTvAutoRotateEnabled(true);
+    setTvRotateEveryMs(12000);
+    setTvRotationTabs(["SOIREE", "CLASSEMENT"]);
+    if (tab !== "SOIREE" && tab !== "CLASSEMENT") setTab("SOIREE");
+  }
+
+  async function requestTvFullscreen() {
+    try {
+      const el = document.documentElement as HTMLElement & {
+        webkitRequestFullscreen?: () => Promise<void> | void;
+      };
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+        return;
+      }
+      if (el.requestFullscreen) {
+        await el.requestFullscreen();
+      } else if (el.webkitRequestFullscreen) {
+        el.webkitRequestFullscreen();
+      }
+    } catch {}
+  }
+
   function setBroadcastOverlay(kind: BroadcastOverlayKind) {
     setTvBroadcastOverlayKind((prev) => {
       const next = prev === kind ? "" : kind;
@@ -5125,7 +5152,7 @@ export default function App() {
 
         {tvMode && tab === "SOIREE" && (
           <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
-            <div className="lg:col-span-2 rounded-2xl border border-cyan-300/25 bg-gradient-to-br from-cyan-500/15 via-black/40 to-emerald-500/10 p-6 shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
+            <div className="tv-main-stage lg:col-span-2 rounded-2xl border border-cyan-300/25 bg-gradient-to-br from-cyan-500/15 via-black/40 to-emerald-500/10 p-6 shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
               <div className="flex items-center justify-between gap-3">
                 <div className="text-xs uppercase tracking-[0.28em] text-cyan-200/90">Live Match</div>
                 {tvLiveFocus ? (
@@ -5140,27 +5167,27 @@ export default function App() {
               {tvLiveFocus ? (
                 <>
                   <div className="mt-4 grid grid-cols-[1fr,auto,1fr] items-center gap-4">
-                    <div className="text-3xl font-extrabold tracking-tight">{tvLiveFocus.a || "—"}</div>
-                    <div className="text-white/50 text-xl">VS</div>
-                    <div className="text-right text-3xl font-extrabold tracking-tight">{tvLiveFocus.b || "—"}</div>
+                    <div className="tv-main-player text-3xl font-extrabold tracking-tight">{tvLiveFocus.a || "—"}</div>
+                    <div className="tv-main-versus text-white/50 text-xl">VS</div>
+                    <div className="tv-main-player text-right text-3xl font-extrabold tracking-tight">{tvLiveFocus.b || "—"}</div>
                   </div>
                   <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
                     <div className="rounded-xl border border-white/10 bg-black/30 p-3">
                       <div className="text-[11px] text-white/60">Chrono match</div>
-                      <div className="mt-1 text-3xl font-black">
+                      <div className="tv-main-chrono mt-1 text-3xl font-black">
                         {tvLiveFocus.startedAt ? formatDuration(getMatchDurationMs(tvLiveFocus, clockNow)) : "00:00"}
                       </div>
                     </div>
                     <div className="rounded-xl border border-white/10 bg-black/30 p-3">
                       <div className="text-[11px] text-white/60">Phase</div>
-                      <div className="mt-1 text-xl font-extrabold">
+                      <div className="tv-main-meta mt-1 text-xl font-extrabold">
                         {tvLiveFocus.phase}
                         {tvLiveFocus.pool ? ` ${tvLiveFocus.pool}` : ""}
                       </div>
                     </div>
                     <div className="rounded-xl border border-white/10 bg-black/30 p-3">
                       <div className="text-[11px] text-white/60">Format</div>
-                      <div className="mt-1 text-xl font-extrabold">{tvLiveFocus.format}</div>
+                      <div className="tv-main-meta mt-1 text-xl font-extrabold">{tvLiveFocus.format}</div>
                     </div>
                   </div>
                 </>
@@ -8070,6 +8097,15 @@ export default function App() {
             <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-2">
               <div className="mb-2 text-xs text-white/60">Affichage TV</div>
               <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant={tvDisplayMode === "BIGSCREEN" && tvInfoDensity === "FOCUS" ? "primary" : "ghost"}
+                  onClick={() => applyTv190Preset()}
+                >
+                  Preset TV 190cm
+                </Button>
+                <Button variant="ghost" onClick={() => requestTvFullscreen()}>
+                  Plein écran
+                </Button>
                 <Button variant={tvDisplayMode === "BIGSCREEN" ? "primary" : "ghost"} onClick={() => setTvDisplayMode("BIGSCREEN")}>
                   Big Screen
                 </Button>

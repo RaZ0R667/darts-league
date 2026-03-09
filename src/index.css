@@ -153,6 +153,31 @@ body {
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
 }
 
+.app-shell.tv-mode.tv-display-bigscreen.tv-density-focus .tv-main-stage {
+  min-height: 56vh;
+}
+
+.app-shell.tv-mode.tv-display-bigscreen.tv-density-focus .tv-main-player {
+  font-size: clamp(2.8rem, 5.8vw, 6rem);
+  line-height: 0.95;
+}
+
+.app-shell.tv-mode.tv-display-bigscreen.tv-density-focus .tv-main-versus {
+  font-size: clamp(1.6rem, 2.8vw, 2.8rem);
+}
+
+.app-shell.tv-mode.tv-display-bigscreen.tv-density-focus .tv-main-chrono {
+  font-size: clamp(2rem, 4vw, 3.8rem);
+}
+
+.app-shell.tv-mode.tv-display-bigscreen.tv-density-focus .tv-main-meta {
+  font-size: clamp(1.2rem, 2.2vw, 2rem);
+}
+
+.app-shell.tv-mode.tv-display-bigscreen.tv-density-focus .tv-scoreboard-strip {
+  font-size: clamp(1rem, 1.5vw, 1.3rem);
+}
+
 .app-shell.tv-mode {
   background:
     radial-gradient(900px 500px at 50% -10%, rgba(234, 179, 8, 0.18), transparent 60%),
