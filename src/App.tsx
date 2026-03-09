@@ -33,7 +33,10 @@ type PerformanceSort = "POWER" | "FORM" | "DYNAMIC" | "LOWS";
 type TournamentFormat = "CLASSIC_POOLS" | "ROUND_ROBIN" | "SWISS_LITE" | "DOUBLE_ELIM_LITE";
 type TvTab = Extract<AppTab, "SOIREE" | "CLASSEMENT" | "H2H">;
 type BroadcastOverlayKind = "" | "SPONSOR" | "PAUSE" | "ANNOUNCE";
+type TvDisplayMode = "STANDARD" | "BIGSCREEN";
+type TvInfoDensity = "FULL" | "FOCUS";
 type SfxKind = "match" | "checkout" | "scene" | "clutch" | "podium";
+type SfxProfile = "SOFT" | "ARENA" | "FINAL";
 type CinematicMoment = {
   id: string;
   title: string;
@@ -221,6 +224,9 @@ const TV_ROTATION_AUTO_KEY = "darts_league_tv_rotation_auto_v1";
 const TV_ROTATION_SPEED_KEY = "darts_league_tv_rotation_speed_v1";
 const TV_SOUND_ENABLED_KEY = "darts_league_tv_sound_enabled_v1";
 const TV_SOUND_VOLUME_KEY = "darts_league_tv_sound_volume_v1";
+const TV_SOUND_PROFILE_KEY = "darts_league_tv_sound_profile_v1";
+const TV_DISPLAY_MODE_KEY = "darts_league_tv_display_mode_v1";
+const TV_INFO_DENSITY_KEY = "darts_league_tv_info_density_v1";
 
 const SUPABASE_URL = (import.meta as any)?.env?.VITE_SUPABASE_URL ?? "";
 const SUPABASE_ANON_KEY = (import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY ?? "";
@@ -1686,6 +1692,22 @@ export default function App() {
   const [tvBroadcastOverlayKind, setTvBroadcastOverlayKind] = useState<BroadcastOverlayKind>("");
   const [tvBroadcastAnnouncement, setTvBroadcastAnnouncement] = useState("Annonce officielle");
   const [tvSceneOverride, setTvSceneOverride] = useState<"" | TvScene>("");
+  const [tvDisplayMode, setTvDisplayMode] = useState<TvDisplayMode>(() => {
+    try {
+      const raw = localStorage.getItem(TV_DISPLAY_MODE_KEY);
+      return raw === "BIGSCREEN" ? "BIGSCREEN" : "STANDARD";
+    } catch {
+      return "STANDARD";
+    }
+  });
+  const [tvInfoDensity, setTvInfoDensity] = useState<TvInfoDensity>(() => {
+    try {
+      const raw = localStorage.getItem(TV_INFO_DENSITY_KEY);
+      return raw === "FULL" ? "FULL" : "FOCUS";
+    } catch {
+      return "FOCUS";
+    }
+  });
   const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
     try {
       return localStorage.getItem(TV_SOUND_ENABLED_KEY) !== "0";
@@ -1699,6 +1721,14 @@ export default function App() {
       return Math.max(0, Math.min(100, Number.isFinite(raw) ? raw : 65));
     } catch {
       return 65;
+    }
+  });
+  const [soundProfile, setSoundProfile] = useState<SfxProfile>(() => {
+    try {
+      const raw = localStorage.getItem(TV_SOUND_PROFILE_KEY);
+      return raw === "SOFT" || raw === "ARENA" || raw === "FINAL" ? raw : "ARENA";
+    } catch {
+      return "ARENA";
     }
   });
   const [operatorFullscreen, setOperatorFullscreen] = useState(false);
@@ -1821,8 +1851,16 @@ export default function App() {
     try {
       localStorage.setItem(TV_SOUND_ENABLED_KEY, soundEnabled ? "1" : "0");
       localStorage.setItem(TV_SOUND_VOLUME_KEY, String(soundVolume));
+      localStorage.setItem(TV_SOUND_PROFILE_KEY, soundProfile);
     } catch {}
-  }, [soundEnabled, soundVolume]);
+  }, [soundEnabled, soundVolume, soundProfile]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TV_DISPLAY_MODE_KEY, tvDisplayMode);
+      localStorage.setItem(TV_INFO_DENSITY_KEY, tvInfoDensity);
+    } catch {}
+  }, [tvDisplayMode, tvInfoDensity]);
 
   useEffect(() => {
     if (readOnlyMode) return;
@@ -2753,6 +2791,7 @@ export default function App() {
     if (tvScene === "WARMUP") return "#06b6d4";
     return "#22c55e";
   }, [tvScene]);
+  const tvFocusMode = tvMode && tvInfoDensity === "FOCUS";
 
   const tvMomentLines = useMemo(() => {
     if (cinematicMoment) {
@@ -3131,7 +3170,10 @@ export default function App() {
       const ctx = getAudioContext();
       if (!ctx) return;
       if (ctx.state === "suspended") void ctx.resume();
-      const baseGain = Math.max(0, Math.min(1, soundVolume / 100)) * 0.12;
+      const profileGain = soundProfile === "SOFT" ? 0.7 : soundProfile === "FINAL" ? 1.2 : 1;
+      const profileWave: OscillatorType =
+        soundProfile === "SOFT" ? "sine" : soundProfile === "FINAL" ? "square" : "triangle";
+      const baseGain = Math.max(0, Math.min(1, soundVolume / 100)) * 0.12 * profileGain;
       const now = ctx.currentTime + 0.01;
       const tones: Array<{ hz: number; duration: number; gain?: number; type?: OscillatorType; offset?: number }> =
         kind === "checkout"
@@ -3161,12 +3203,16 @@ export default function App() {
                     { hz: 880, duration: 0.09, type: "sine", offset: 0.07 },
                   ];
 
+      if (soundProfile === "FINAL" && (kind === "clutch" || kind === "podium")) {
+        tones.push({ hz: 1318, duration: 0.14, type: "sawtooth", offset: 0.24, gain: 0.75 });
+      }
+
       tones.forEach((t) => {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         const startAt = now + (t.offset ?? 0);
         const peak = Math.max(0.001, baseGain * (t.gain ?? 1));
-        osc.type = t.type ?? "sine";
+        osc.type = t.type ?? profileWave;
         osc.frequency.setValueAtTime(t.hz, startAt);
         gain.gain.setValueAtTime(0.0001, startAt);
         gain.gain.exponentialRampToValueAtTime(peak, startAt + 0.015);
@@ -4765,7 +4811,7 @@ export default function App() {
 
   return (
     <div
-      className={`min-h-screen text-white app-shell ${tvMode ? `tv-mode tv-scene-${tvScene.toLowerCase()}` : ""} ${
+      className={`min-h-screen text-white app-shell ${tvMode ? `tv-mode tv-scene-${tvScene.toLowerCase()} tv-display-${tvDisplayMode.toLowerCase()} tv-density-${tvInfoDensity.toLowerCase()}` : ""} ${
         tab === "SOIREE" && finalNightMode ? "final-night-shell" : ""
       }`}
     >
@@ -4877,7 +4923,7 @@ export default function App() {
           </div>
         )}
 
-        {tvMode && tab !== "CLASSEMENT" && (
+        {tvMode && tab !== "CLASSEMENT" && !tvFocusMode && (
           <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
             {seasonStats.table.slice(0, 3).map((r, idx) => {
               const label = idx === 0 ? "Champion" : idx === 1 ? "Challenger" : "Contender";
@@ -4942,7 +4988,7 @@ export default function App() {
 
         {tvMode && tab === "SOIREE" && (
           <div className="mb-4 tv-scoreboard-strip rounded-2xl border border-white/10 bg-black/45 px-4 py-3">
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+            <div className={`grid grid-cols-1 gap-3 ${tvFocusMode ? "lg:grid-cols-2" : "lg:grid-cols-3"}`}>
               <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
                 <div className="text-[11px] uppercase tracking-[0.18em] text-white/60">Scoreboard Live</div>
                 {tvLiveFocus ? (
@@ -4973,20 +5019,22 @@ export default function App() {
                   <div className="mt-1 text-sm text-white/70">En attente / soirée terminée</div>
                 )}
               </div>
-              <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
-                <div className="text-[11px] uppercase tracking-[0.18em] text-white/60">ETA Soirée</div>
-                <div className="mt-1 text-sm font-semibold">
-                  {soireeEta.expectedPlayableCount > 0 ? formatTimeHM(soireeEta.etaMs) : "—"}
+              {!tvFocusMode && (
+                <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-white/60">ETA Soirée</div>
+                  <div className="mt-1 text-sm font-semibold">
+                    {soireeEta.expectedPlayableCount > 0 ? formatTimeHM(soireeEta.etaMs) : "—"}
+                  </div>
+                  <div className="mt-1 text-xs text-white/70">
+                    Restants: <AnimatedMetric value={soireeEta.expectedPlayableCount} kind="int" durationMs={420} /> matchs • {formatDuration(soireeEta.remainingMs)}
+                  </div>
                 </div>
-                <div className="mt-1 text-xs text-white/70">
-                  Restants: <AnimatedMetric value={soireeEta.expectedPlayableCount} kind="int" durationMs={420} /> matchs • {formatDuration(soireeEta.remainingMs)}
-                </div>
-              </div>
+              )}
             </div>
           </div>
         )}
 
-        {tvMode && tab === "SOIREE" && tvPlayerCards.length > 0 && (
+        {tvMode && tab === "SOIREE" && tvPlayerCards.length > 0 && !tvFocusMode && (
           <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-2">
             {tvPlayerCards.map((p) => (
               <div key={p.name} className="tv-player-card rounded-2xl border border-white/10 bg-black/45 p-4">
@@ -5062,7 +5110,7 @@ export default function App() {
           </div>
         )}
 
-        {tvMode && tab === "SOIREE" && tvOverlayCard && (
+        {tvMode && tab === "SOIREE" && tvOverlayCard && !tvFocusMode && (
           <div className={`mb-4 rounded-2xl border px-4 py-3 tv-overlay-card tv-overlay-${tvOverlayCard.tone}`} key={`${tvOverlayCard.id}-${tvOverlayIndex}`}>
             <div className="text-[11px] uppercase tracking-[0.28em] text-white/70">{tvOverlayCard.title}</div>
             <div className="mt-2 space-y-1 text-sm">
@@ -8019,6 +8067,26 @@ export default function App() {
                 ))}
               </div>
             </div>
+            <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-2">
+              <div className="mb-2 text-xs text-white/60">Affichage TV</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant={tvDisplayMode === "BIGSCREEN" ? "primary" : "ghost"} onClick={() => setTvDisplayMode("BIGSCREEN")}>
+                  Big Screen
+                </Button>
+                <Button variant={tvDisplayMode === "STANDARD" ? "primary" : "ghost"} onClick={() => setTvDisplayMode("STANDARD")}>
+                  Standard
+                </Button>
+                <Button variant={tvInfoDensity === "FOCUS" ? "primary" : "ghost"} onClick={() => setTvInfoDensity("FOCUS")}>
+                  Mode Focus
+                </Button>
+                <Button variant={tvInfoDensity === "FULL" ? "primary" : "ghost"} onClick={() => setTvInfoDensity("FULL")}>
+                  Mode Full
+                </Button>
+              </div>
+              <div className="mt-2 text-[11px] text-white/60">
+                Focus = moins d’infos à l’écran. Big Screen = éléments et typo plus grands pour TV.
+              </div>
+            </div>
             <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
               {TV_TAB_CATALOG.map((item) => {
                 const enabled = tvRotationTabs.includes(item.tab);
@@ -8076,6 +8144,16 @@ export default function App() {
                 <Button variant={soundEnabled ? "primary" : "ghost"} onClick={() => setSoundEnabled((v) => !v)}>
                   {soundEnabled ? "Son ON" : "Son OFF"}
                 </Button>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-white/60">Pack</span>
+                  <div className="w-32">
+                    <Select
+                      value={soundProfile}
+                      onChange={(v) => setSoundProfile(v === "SOFT" || v === "FINAL" ? v : "ARENA")}
+                      options={["SOFT", "ARENA", "FINAL"]}
+                    />
+                  </div>
+                </div>
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-white/60">Volume</span>
                   <input

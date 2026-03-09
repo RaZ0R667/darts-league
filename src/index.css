@@ -128,6 +128,31 @@ body {
   max-width: 1200px;
 }
 
+.app-shell.tv-mode.tv-display-bigscreen {
+  font-size: 1.2rem;
+}
+
+.app-shell.tv-mode.tv-display-bigscreen .max-w-6xl {
+  max-width: min(96vw, 1880px);
+}
+
+.app-shell.tv-mode.tv-display-bigscreen .tv-lower-third .text-xl,
+.app-shell.tv-mode.tv-display-bigscreen .tv-scene-banner .text-xl,
+.app-shell.tv-mode.tv-display-bigscreen .tv-cinematic-overlay .text-lg {
+  font-size: clamp(1.5rem, 2.3vw, 2.2rem);
+}
+
+.app-shell.tv-mode.tv-display-bigscreen .tv-scoreboard-strip,
+.app-shell.tv-mode.tv-display-bigscreen .tv-player-card,
+.app-shell.tv-mode.tv-display-bigscreen .tv-overlay-card {
+  border-width: 1px;
+}
+
+.app-shell.tv-mode.tv-density-focus .tv-scoreboard-strip,
+.app-shell.tv-mode.tv-density-focus .tv-lower-third {
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+}
+
 .app-shell.tv-mode {
   background:
     radial-gradient(900px 500px at 50% -10%, rgba(234, 179, 8, 0.18), transparent 60%),
